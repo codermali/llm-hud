@@ -11,10 +11,10 @@ class HudTests(unittest.TestCase):
         snapshot = HudSnapshot(
             provider="Claude",
             model="Opus",
-            cwd="/Users/mali/Desktop/llm-hud",
+            cwd="/home/example/Desktop/llm-hud",
             windows=(UsageWindow("5h", 76), UsageWindow("7d", 59)),
         )
-        with Environment(LLM_HUD_HOME="/Users/mali"):
+        with Environment(LLM_HUD_HOME="/home/example"):
             self.assertEqual(
                 render_hud(snapshot, color=False),
                 "Claude · Opus · ~/Desktop/llm-hud\n"
