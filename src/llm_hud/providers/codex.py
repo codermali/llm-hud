@@ -94,7 +94,7 @@ class CodexProvider(Provider):
             updated = set_array(text, "tui", "status_line", installed)
             atomic_write_json(state_path, state)
             atomic_write_text(path, updated)
-        except (OSError, tomllib.TOMLDecodeError) as error:
+        except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
             return Result(self.id, "error", str(error))
         return Result(self.id, "installed", f"configured {path}")
 
@@ -127,7 +127,7 @@ class CodexProvider(Provider):
                 updated = set_array(text, "tui", "status_line", restored)
             atomic_write_text(path, updated)
             state_path.unlink(missing_ok=True)
-        except (OSError, tomllib.TOMLDecodeError) as error:
+        except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
             return Result(self.id, "error", str(error))
         return Result(self.id, "uninstalled", f"restored {path}")
 

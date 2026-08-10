@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -28,6 +30,7 @@ class ClaudeProviderTests(unittest.TestCase):
                     configured["statusLine"]["command"],
                     "/opt/llm-hud render claude",
                 )
+                self.assertNotIn("refreshInterval", configured["statusLine"])
 
                 raw = json.dumps(
                     {
@@ -82,6 +85,19 @@ class ClaudeProviderTests(unittest.TestCase):
                 restored = json.loads(settings.read_text())
                 self.assertEqual(restored["theme"], "dark")
                 self.assertEqual(restored["statusLine"]["command"], "printf existing")
+
+    def test_install_preserves_settings_file_permissions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "settings.json"
+            settings.write_text("{}")
+            os.chmod(settings, 0o644)
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                ClaudeProvider().install("/opt/llm-hud")
+                self.assertEqual(stat.S_IMODE(settings.stat().st_mode), 0o644)
 
     def test_uninstall_does_not_replace_later_user_change(self):
         with tempfile.TemporaryDirectory() as directory:

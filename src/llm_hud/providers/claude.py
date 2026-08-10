@@ -147,7 +147,7 @@ class ClaudeProvider(Provider):
 
         configured = dict(current) if isinstance(current, dict) else {}
         configured.update({"type": "command", "command": installed_command})
-        configured.setdefault("refreshInterval", 30)
+        configured.pop("refreshInterval", None)
 
         state = {
             "schema": 1,
@@ -159,7 +159,7 @@ class ClaudeProvider(Provider):
         try:
             atomic_write_json(state_path, state)
             settings["statusLine"] = configured
-            atomic_write_json(settings_path, settings)
+            atomic_write_json(settings_path, settings, mode=None)
         except OSError as error:
             return Result(self.id, "error", str(error))
         return Result(self.id, "installed", f"configured {settings_path}")
@@ -188,7 +188,7 @@ class ClaudeProvider(Provider):
         else:
             settings.pop("statusLine", None)
         try:
-            atomic_write_json(settings_path, settings)
+            atomic_write_json(settings_path, settings, mode=None)
             state_path.unlink(missing_ok=True)
         except OSError as error:
             return Result(self.id, "error", str(error))

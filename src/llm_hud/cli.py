@@ -43,6 +43,8 @@ def command_install(args: argparse.Namespace) -> int:
         return 1
     ok = True
     for provider in selected:
+        if not provider.available():
+            print(f"note: the {provider.id} CLI was not detected; configuring it anyway")
         ok = _print_result(provider.install(_command_path())) and ok
     return 0 if ok else 1
 
@@ -59,14 +61,15 @@ def _version(command: str) -> str:
         completed = subprocess.run(
             [command, "--version"],
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             timeout=3,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return "unknown"
-    return completed.stdout.strip() or "unknown"
+    output = completed.stdout.strip() or completed.stderr.strip()
+    return output.splitlines()[0] if output else "unknown"
 
 
 def command_doctor(_: argparse.Namespace) -> int:

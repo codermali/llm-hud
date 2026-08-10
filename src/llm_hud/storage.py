@@ -29,7 +29,9 @@ def atomic_write_text(path: Path, content: str, mode: int | None = None) -> None
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(content)
-        os.chmod(temp_path, mode or existing_mode or 0o600)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_path, mode if mode is not None else existing_mode or 0o600)
         os.replace(temp_path, path)
     finally:
         try:
@@ -38,5 +40,6 @@ def atomic_write_text(path: Path, content: str, mode: int | None = None) -> None
             pass
 
 
-def atomic_write_json(path: Path, payload: Any) -> None:
-    atomic_write_text(path, json.dumps(payload, indent=2) + "\n", mode=0o600)
+def atomic_write_json(path: Path, payload: Any, mode: int | None = 0o600) -> None:
+    """Write JSON atomically; mode=None keeps the file's existing permissions."""
+    atomic_write_text(path, json.dumps(payload, indent=2) + "\n", mode=mode)

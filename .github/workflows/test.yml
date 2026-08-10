@@ -17,3 +17,22 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m unittest discover -s tests -t . -v
       - run: python bin/llm-hud --version
+
+  installer-smoke:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install, doctor, and uninstall in an isolated prefix
+        run: |
+          export LLM_HUD_INSTALL_DIR="$RUNNER_TEMP/llm-hud"
+          export LLM_HUD_BIN_DIR="$RUNNER_TEMP/bin"
+          export LLM_HUD_STATE_DIR="$RUNNER_TEMP/state"
+          export LLM_HUD_CLAUDE_SETTINGS="$RUNNER_TEMP/claude-settings.json"
+          export LLM_HUD_CODEX_CONFIG="$RUNNER_TEMP/codex-config.toml"
+          export LLM_HUD_CLAUDE_BIN=1
+          ./install.sh
+          "$RUNNER_TEMP/bin/llm-hud" doctor
+          "$RUNNER_TEMP/bin/llm-hud" uninstall

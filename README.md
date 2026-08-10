@@ -43,19 +43,26 @@ gpt-5.6 xhigh · ~/projects/example · weekly 63% left · Context 98% left
 
 ## Install
 
-From a checkout:
+One line, no checkout needed:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/codermali/llm-hud/main/install.sh | sh
+```
+
+Or from a checkout:
 
 ```bash
 ./install.sh
 ```
 
-The installer copies the runtime to `~/.local/share/llm-hud`, creates
-`~/.local/bin/llm-hud`, detects installed coding-agent CLIs, and configures only
-the detected providers. Restoration metadata is stored under
-`~/.config/llm-hud`.
+The installer copies the runtime to `~/.local/share/llm-hud`, writes a
+`~/.local/bin/llm-hud` launcher pinned to a detected Python 3.11+ interpreter,
+detects installed coding-agent CLIs, and configures only the detected
+providers. Restoration metadata is stored under `~/.config/llm-hud`.
 
-The source installer requires Python 3.11 or newer. A release installer can
-bundle the runtime after the project is published.
+Python 3.11 or newer is required; the installer tries `python3.13`,
+`python3.12`, `python3.11`, then `python3`. Override the choice with
+`LLM_HUD_PYTHON=/path/to/python3.11`.
 
 ## Commands
 
@@ -139,9 +146,12 @@ its available data into the shared HUD model when custom rendering is supported.
 
 ## Development
 
+Development also requires Python 3.11+; on macOS the system `python3` may be
+older, so use an explicit interpreter:
+
 ```bash
-python3 -m unittest discover -s tests -t . -v
-python3 bin/llm-hud providers
+python3.12 -m unittest discover -s tests -t . -v
+python3.12 bin/llm-hud providers
 ```
 
 Tests use temporary HOME, settings, and state paths. They do not modify real
