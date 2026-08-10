@@ -75,6 +75,20 @@ class CodexProviderTests(unittest.TestCase):
                 provider.uninstall()
                 self.assertEqual(status_line(config), ["current-dir", "git-branch"])
 
+    def test_unwritable_table_reports_error_without_touching_the_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            original = '[[tui]]\nname = "x"\n'
+            config.write_text(original)
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                result = CodexProvider().install("ignored")
+            self.assertEqual(result.status, "error")
+            self.assertEqual(config.read_text(), original)
+
     def test_uninstall_leaves_changed_managed_fields_untouched(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

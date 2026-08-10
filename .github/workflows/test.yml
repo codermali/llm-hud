@@ -18,6 +18,26 @@ jobs:
       - run: python -m unittest discover -s tests -t . -v
       - run: python bin/llm-hud --version
 
+  old-python-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Launcher refuses to run and explains why
+        run: |
+          if python bin/llm-hud --version 2>"$RUNNER_TEMP/err"; then
+            echo "expected a non-zero exit on Python 3.10"; exit 1
+          fi
+          grep -q "requires Python 3.11" "$RUNNER_TEMP/err"
+      - name: Installer rejects an old LLM_HUD_PYTHON
+        run: |
+          if LLM_HUD_PYTHON=$(command -v python) ./install.sh 2>"$RUNNER_TEMP/err2"; then
+            echo "expected a non-zero exit for an old interpreter"; exit 1
+          fi
+          grep -q "requires Python 3.11" "$RUNNER_TEMP/err2"
+
   installer-smoke:
     strategy:
       matrix:
@@ -25,14 +45,61 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install, doctor, and uninstall in an isolated prefix
+      - name: Install into an isolated prefix
         run: |
-          export LLM_HUD_INSTALL_DIR="$RUNNER_TEMP/llm-hud"
-          export LLM_HUD_BIN_DIR="$RUNNER_TEMP/bin"
-          export LLM_HUD_STATE_DIR="$RUNNER_TEMP/state"
-          export LLM_HUD_CLAUDE_SETTINGS="$RUNNER_TEMP/claude-settings.json"
-          export LLM_HUD_CODEX_CONFIG="$RUNNER_TEMP/codex-config.toml"
-          export LLM_HUD_CLAUDE_BIN=1
           ./install.sh
+        env:
+          LLM_HUD_INSTALL_DIR: ${{ runner.temp }}/llm-hud
+          LLM_HUD_BIN_DIR: ${{ runner.temp }}/bin
+          LLM_HUD_STATE_DIR: ${{ runner.temp }}/state
+          LLM_HUD_CLAUDE_SETTINGS: ${{ runner.temp }}/claude-settings.json
+          LLM_HUD_CODEX_CONFIG: ${{ runner.temp }}/codex-config.toml
+          LLM_HUD_CLAUDE_BIN: "1"
+      - name: Launcher pins an absolute interpreter and runs without Python on PATH
+        run: |
+          launcher="$RUNNER_TEMP/bin/llm-hud"
+          test ! -L "$launcher"
+          grep -qE "^exec '/.*' '/.*' \"\\\$@\"$" "$launcher"
+          mkdir -p "$RUNNER_TEMP/empty"
+          PATH="$RUNNER_TEMP/empty" "$launcher" --version
+      - name: doctor and uninstall
+        run: |
           "$RUNNER_TEMP/bin/llm-hud" doctor
           "$RUNNER_TEMP/bin/llm-hud" uninstall
+        env:
+          LLM_HUD_STATE_DIR: ${{ runner.temp }}/state
+          LLM_HUD_CLAUDE_SETTINGS: ${{ runner.temp }}/claude-settings.json
+          LLM_HUD_CODEX_CONFIG: ${{ runner.temp }}/codex-config.toml
+          LLM_HUD_CLAUDE_BIN: "1"
+      - name: Installer fails when no agent CLI is present
+        run: |
+          if ./install.sh; then
+            echo "expected a non-zero exit when nothing is detected"; exit 1
+          fi
+        env:
+          LLM_HUD_INSTALL_DIR: ${{ runner.temp }}/none/llm-hud
+          LLM_HUD_BIN_DIR: ${{ runner.temp }}/none/bin
+          LLM_HUD_STATE_DIR: ${{ runner.temp }}/none/state
+          LLM_HUD_CLAUDE_BIN: ""
+          LLM_HUD_CODEX_BIN: ""
+          LLM_HUD_KIMI_BIN: ""
+
+  bootstrap-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install from a tarball the way curl | sh does
+        run: |
+          git archive --prefix=llm-hud-main/ HEAD | gzip > "$RUNNER_TEMP/src.tgz"
+          mkdir -p "$RUNNER_TEMP/elsewhere"
+          cd "$RUNNER_TEMP/elsewhere"
+          cat "$GITHUB_WORKSPACE/install.sh" | sh
+          "$RUNNER_TEMP/bin/llm-hud" --version
+        env:
+          LLM_HUD_TARBALL_URL: file://${{ runner.temp }}/src.tgz
+          LLM_HUD_INSTALL_DIR: ${{ runner.temp }}/llm-hud
+          LLM_HUD_BIN_DIR: ${{ runner.temp }}/bin
+          LLM_HUD_STATE_DIR: ${{ runner.temp }}/state
+          LLM_HUD_CLAUDE_SETTINGS: ${{ runner.temp }}/claude-settings.json
+          LLM_HUD_CODEX_CONFIG: ${{ runner.temp }}/codex-config.toml
+          LLM_HUD_CLAUDE_BIN: "1"

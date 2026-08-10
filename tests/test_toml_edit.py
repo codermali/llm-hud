@@ -36,6 +36,46 @@ class SetArrayTests(unittest.TestCase):
         with self.assertRaises((tomllib.TOMLDecodeError, ValueError)):
             set_array('[[tui]]\nname = "x"\n', "tui", "status_line", ["a"])
 
+    def test_file_without_trailing_newline(self):
+        result = set_array("[tui]\nnotifications = true", "tui", "status_line", ["a"])
+        parsed = tomllib.loads(result)
+        self.assertEqual(parsed["tui"]["status_line"], ["a"])
+        self.assertTrue(parsed["tui"]["notifications"])
+
+    def test_leaves_lookalike_lines_inside_multiline_strings_alone(self):
+        text = (
+            '[tui]\nbanner = """\nstatus_line = ["decoy"]\n"""\n'
+            'status_line = ["old"]\n'
+        )
+        parsed = tomllib.loads(set_array(text, "tui", "status_line", ["new"]))
+        self.assertEqual(parsed["tui"]["banner"], 'status_line = ["decoy"]\n')
+        self.assertEqual(parsed["tui"]["status_line"], ["new"])
+
+    def test_reinstall_with_identical_values_does_not_touch_strings(self):
+        # The post-edit check must compare the whole document: when the key
+        # already holds the requested values, a key-only check sees no change.
+        text = '[tui]\nbanner = """\nstatus_line = ["decoy"]\n"""\nstatus_line = ["a"]\n'
+        parsed = tomllib.loads(set_array(text, "tui", "status_line", ["a"]))
+        self.assertEqual(parsed["tui"]["banner"], 'status_line = ["decoy"]\n')
+
+    def test_fake_table_header_inside_multiline_string(self):
+        text = '[tui]\nbanner = """\n[art]\n"""\nx = 1\n'
+        parsed = tomllib.loads(set_array(text, "tui", "status_line", ["a"]))
+        self.assertEqual(parsed["tui"]["banner"], "[art]\n")
+        self.assertEqual(parsed["tui"]["status_line"], ["a"])
+        self.assertEqual(parsed["tui"]["x"], 1)
+
+    def test_nested_array_element_on_its_own_line(self):
+        text = '[tui]\nlayout = [\n["left", "right"]\n]\n'
+        parsed = tomllib.loads(set_array(text, "tui", "status_line", ["a"]))
+        self.assertEqual(parsed["tui"]["layout"], [["left", "right"]])
+        self.assertEqual(parsed["tui"]["status_line"], ["a"])
+
+    def test_crlf_line_endings_are_preserved(self):
+        result = set_array('[tui]\r\nstatus_line = ["a"]\r\nx = 1\r\n', "tui", "status_line", ["b"])
+        self.assertNotIn("\n", result.replace("\r\n", ""))
+        self.assertEqual(tomllib.loads(result)["tui"]["status_line"], ["b"])
+
 
 class RemoveKeyTests(unittest.TestCase):
     def test_removes_only_target_key(self):
@@ -48,6 +88,13 @@ class RemoveKeyTests(unittest.TestCase):
     def test_missing_key_returns_text_unchanged(self):
         text = "[tui]\n"
         self.assertEqual(remove_key(text, "tui", "status_line"), text)
+
+    def test_does_not_delete_lookalike_line_inside_multiline_string(self):
+        text = '[tui]\nbanner = """\nstatus_line = ["decoy"]\n"""\nstatus_line = ["a"]\nx = 1\n'
+        parsed = tomllib.loads(remove_key(text, "tui", "status_line"))
+        self.assertEqual(parsed["tui"]["banner"], 'status_line = ["decoy"]\n')
+        self.assertNotIn("status_line", parsed["tui"])
+        self.assertEqual(parsed["tui"]["x"], 1)
 
 
 if __name__ == "__main__":
