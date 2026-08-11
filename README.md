@@ -174,6 +174,12 @@ python3.12 bin/llm-hud providers
 测试使用临时的 HOME、配置和状态路径，不会修改本机真实的 Claude Code 或 Codex CLI
 配置。
 
+## 发布
+
+维护者先更新 `src/llm_hud/_version.py`，再把同版本的 `vX.Y.Z` 标签推送到 GitHub。
+Release 工作流会核对标签与代码版本、运行测试，并发布 `llm-hud.tar.gz` 和
+`SHA256SUMS`。创建标签和正式发布仍由维护者主动决定。
+
 ## 许可证
 
 本项目使用 [MIT License](LICENSE)。
