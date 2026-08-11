@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -130,7 +131,7 @@ class ClaudeProvider(Provider):
         except (OSError, json.JSONDecodeError, ValueError) as error:
             return Result(self.id, "error", str(error))
 
-        installed_command = f"{command_path} render claude"
+        installed_command = shlex.join((command_path, "render", "claude"))
         existing_state = read_json(state_path, {})
         current = settings.get("statusLine")
         current_command = current.get("command") if isinstance(current, dict) else None

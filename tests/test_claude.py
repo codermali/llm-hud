@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -98,6 +99,34 @@ class ClaudeProviderTests(unittest.TestCase):
             ):
                 ClaudeProvider().install("/opt/llm-hud")
                 self.assertEqual(stat.S_IMODE(settings.stat().st_mode), 0o644)
+
+    def test_install_shell_quotes_the_renderer_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            command_path = root / "bin with space" / "llm-hud's"
+            command_path.parent.mkdir()
+            command_path.write_text("#!/bin/sh\nprintf '%s' quoted\n")
+            os.chmod(command_path, 0o755)
+            settings = root / "settings.json"
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                result = ClaudeProvider().install(str(command_path))
+
+            self.assertEqual(result.status, "installed")
+            configured = json.loads(settings.read_text())
+            command = configured["statusLine"]["command"]
+            completed = subprocess.run(
+                command,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(completed.stdout, "quoted")
 
     def test_uninstall_does_not_replace_later_user_change(self):
         with tempfile.TemporaryDirectory() as directory:
