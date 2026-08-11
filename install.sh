@@ -6,11 +6,45 @@
 #
 set -eu
 
-repo_tarball=${LLM_HUD_TARBALL_URL:-"https://github.com/codermali/llm-hud/archive/refs/heads/main.tar.gz"}
+default_repo_tarball=https://github.com/codermali/llm-hud/archive/refs/heads/main.tar.gz
+repo_tarball=${LLM_HUD_TARBALL_URL:-"$default_repo_tarball"}
 install_root=${LLM_HUD_INSTALL_DIR:-"$HOME/.local/share/llm-hud"}
 bin_dir=${LLM_HUD_BIN_DIR:-"$HOME/.local/bin"}
 install_marker_name=.llm-hud-install-root
 install_marker_value=llm-hud-install-root-v1
+carriage_return=$(printf '\r')
+
+reject_line_break() {
+  case "$2" in
+    *"$carriage_return"*|*'
+'*)
+      printf '%s\n' "Refusing $1 containing a carriage return or newline." >&2
+      exit 1
+      ;;
+  esac
+}
+
+canonical_directory() {
+  canonical_result=$(
+    CDPATH= cd -- "$1" 2>/dev/null
+    pwd -P
+    printf '.'
+  ) || return 1
+  canonical_suffix='
+.'
+  case "$canonical_result" in
+    *"$canonical_suffix") ;;
+    *) return 1 ;;
+  esac
+  canonical_result=${canonical_result%"$canonical_suffix"}
+}
+
+reject_line_break LLM_HUD_INSTALL_DIR "$install_root"
+reject_line_break LLM_HUD_BIN_DIR "$bin_dir"
+reject_line_break LLM_HUD_PYTHON "${LLM_HUD_PYTHON:-}"
+reject_line_break HOME "$HOME"
+reject_line_break PATH "$PATH"
+reject_line_break installer-path "$0"
 
 directory_is_empty() {
   set -- "$1"/* "$1"/.[!.]* "$1"/..?*
@@ -22,8 +56,31 @@ directory_is_empty() {
   return 0
 }
 
-sh_quote() {
-  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+claim_recovery_shape() {
+  count=0
+  set -- "$1"/* "$1"/.[!.]* "$1"/..?*
+  for entry do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    case "${entry##*/}" in
+      .llm-hud-claim-*)
+        [ ! -L "$entry" ] && [ -f "$entry" ] || return 1
+        count=$((count + 1))
+        ;;
+      *) return 1 ;;
+    esac
+  done
+  [ "$count" -eq 1 ]
+}
+
+legacy_runtime_shape() {
+  [ ! -e "$1/install.sh" ] &&
+    [ ! -d "$1/.git" ] &&
+    [ ! -d "$1/tests" ] &&
+    [ -f "$1/src/llm_hud/cli.py" ] &&
+    [ -f "$1/bin/llm-hud" ] &&
+    [ -f "$1/README.md" ] &&
+    [ -f "$1/LICENSE" ] &&
+    [ -f "$1/pyproject.toml" ]
 }
 
 find_python() {
@@ -51,23 +108,33 @@ if ! python_bin=$(command -v "$python_bin"); then
 fi
 case "$python_bin" in
   /*) ;;
-  *) python_bin=$(CDPATH= cd -- "$(dirname -- "$python_bin")" && pwd)/$(basename -- "$python_bin") ;;
+  *)
+    if ! canonical_directory "$(dirname -- "$python_bin")"; then
+      printf '%s\n' "llm-hud: cannot resolve Python interpreter: $python_bin" >&2
+      exit 1
+    fi
+    python_dir=$canonical_result
+    python_name=$(basename -- "$python_bin")
+    python_bin="$python_dir/$python_name"
+    ;;
 esac
 if ! "$python_bin" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' 2>/dev/null; then
   printf '%s\n' "llm-hud requires Python 3.11 or newer: $python_bin is too old." >&2
   exit 1
 fi
+reject_line_break resolved-python "$python_bin"
 
 # Locate the source tree: the directory containing this script when run from a
 # checkout, otherwise a fresh download of the repository tarball.
 cleanup_dir=""
-marker_tmp=""
-trap '[ -n "$marker_tmp" ] && rm -f "$marker_tmp"; [ -n "$cleanup_dir" ] && rm -rf "$cleanup_dir"' EXIT
+trap '[ -n "$cleanup_dir" ] && rm -rf "$cleanup_dir"' EXIT
 # $0 is not a readable file when the script arrives on stdin (curl | sh); only
 # then does dirname "$0" point at the caller's cwd rather than a checkout.
 script_dir=""
 if [ -f "$0" ]; then
-  script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd -P) || script_dir=""
+  if canonical_directory "$(dirname -- "$0")"; then
+    script_dir=$canonical_result
+  fi
 fi
 if [ -n "$script_dir" ] && [ -f "$script_dir/src/llm_hud/cli.py" ]; then
   source_root=$script_dir
@@ -94,20 +161,51 @@ else
   fi
 fi
 
-# Canonicalize before comparing: a trailing slash, relative spelling, or
-# symlinked path for LLM_HUD_INSTALL_DIR must not let the rm -rf below delete
-# the source tree.
+reject_line_break source-root "$source_root"
+
+# Canonicalize before comparing so checkout aliases never enter the managed
+# installation branch.
 mkdir -p "$install_root"
-install_root=$(CDPATH= cd -- "$install_root" && pwd -P)
+if ! canonical_directory "$install_root"; then
+  printf '%s\n' "Cannot resolve LLM_HUD_INSTALL_DIR: $install_root" >&2
+  exit 1
+fi
+install_root=$canonical_result
+reject_line_break canonical-install-root "$install_root"
+mkdir -p "$bin_dir"
+if ! canonical_directory "$bin_dir"; then
+  printf '%s\n' "Cannot resolve LLM_HUD_BIN_DIR: $bin_dir" >&2
+  exit 1
+fi
+bin_dir=$canonical_result
+reject_line_break canonical-bin-dir "$bin_dir"
+launcher_path="$bin_dir/llm-hud"
+legacy_flat=0
+legacy_unmarked=0
+installer_bootstrap='import runpy
+import sys
+sys.path.insert(0, sys.argv.pop(1))
+runpy.run_module("llm_hud.installer", run_name="__main__")'
 
 if [ "$source_root" != "$install_root" ]; then
-  # Only remove runtime directories from a location that this installer owns.
   # Existing 0.1.0 installations predate the marker, so recognize their full
-  # runtime shape once and adopt them without breaking upgrades.
-  home_root=$(CDPATH= cd -- "$HOME" 2>/dev/null && pwd -P) || home_root=""
-  home_local_root=$(CDPATH= cd -- "$HOME/.local" 2>/dev/null && pwd -P) || home_local_root=""
-  home_local_share_root=$(CDPATH= cd -- "$HOME/.local/share" 2>/dev/null && pwd -P) || home_local_share_root=""
-  home_local_bin_root=$(CDPATH= cd -- "$HOME/.local/bin" 2>/dev/null && pwd -P) || home_local_bin_root=""
+  # flat runtime shape once and adopt only the canonical default directory.
+  home_root=""
+  home_local_root=""
+  home_local_share_root=""
+  home_local_bin_root=""
+  if canonical_directory "$HOME"; then
+    home_root=$canonical_result
+  fi
+  if canonical_directory "$HOME/.local"; then
+    home_local_root=$canonical_result
+  fi
+  if canonical_directory "$HOME/.local/share"; then
+    home_local_share_root=$canonical_result
+  fi
+  if canonical_directory "$HOME/.local/bin"; then
+    home_local_bin_root=$canonical_result
+  fi
   case "$install_root" in
     /|//|"$home_root"|"$home_local_root"|"$home_local_share_root"|"$home_local_bin_root")
       printf '%s\n' "Refusing unsafe LLM_HUD_INSTALL_DIR: $install_root" >&2
@@ -118,70 +216,70 @@ if [ "$source_root" != "$install_root" ]; then
 
   legacy_default_root=""
   if [ -d "$HOME/.local/share/llm-hud" ]; then
-    legacy_default_root=$(CDPATH= cd -- "$HOME/.local/share/llm-hud" 2>/dev/null && pwd -P) || legacy_default_root=""
+    if canonical_directory "$HOME/.local/share/llm-hud"; then
+      legacy_default_root=$canonical_result
+    fi
   fi
   install_marker="$install_root/$install_marker_name"
-  if [ -f "$install_marker" ]; then
+  if [ -L "$install_marker" ]; then
+    printf '%s\n' "Refusing symlink install marker: $install_marker" >&2
+    exit 1
+  elif [ -e "$install_marker" ] && [ ! -f "$install_marker" ]; then
+    printf '%s\n' "Refusing non-file install marker: $install_marker" >&2
+    exit 1
+  elif [ -f "$install_marker" ]; then
     marker_value=$(sed -n '1p' "$install_marker" 2>/dev/null || true)
     if [ "$marker_value" != "$install_marker_value" ]; then
       printf '%s\n' "Refusing unrecognized install marker: $install_marker" >&2
       exit 1
     fi
+    if legacy_runtime_shape "$install_root"; then
+      legacy_flat=1
+    fi
   elif [ "$install_root" = "$legacy_default_root" ] &&
-    [ ! -e "$install_root/install.sh" ] &&
-    [ ! -d "$install_root/.git" ] &&
-    [ ! -d "$install_root/tests" ] &&
-    [ -f "$install_root/src/llm_hud/cli.py" ] &&
-    [ -f "$install_root/bin/llm-hud" ] &&
-    [ -f "$install_root/README.md" ] &&
-    [ -f "$install_root/LICENSE" ] &&
-    [ -f "$install_root/pyproject.toml" ]; then
-    : # Adopt an unmarked installation created by llm-hud 0.1.0.
+    legacy_runtime_shape "$install_root"; then
+    legacy_flat=1
+    legacy_unmarked=1
+  elif claim_recovery_shape "$install_root"; then
+    : # Python verifies and repairs the interrupted exclusive ownership claim.
   elif ! directory_is_empty "$install_root"; then
     printf '%s\n' "Refusing non-empty unmanaged install directory: $install_root" >&2
     printf '%s\n' "Choose an empty directory dedicated to llm-hud." >&2
     exit 1
   fi
 
-  # Claim the validated directory before replacing anything. If a later copy
-  # fails, the next run can safely repair the partial managed installation.
-  marker_tmp="$install_root/${install_marker_name}.tmp.$$"
-  printf '%s\n' "$install_marker_value" >"$marker_tmp"
-  mv -f "$marker_tmp" "$install_marker"
-  marker_tmp=""
-
-  rm -rf "$install_root/src" "$install_root/bin"
-  cp -R "$source_root/src" "$install_root/src"
-  cp -R "$source_root/bin" "$install_root/bin"
-  cp "$source_root/README.md" "$install_root/README.md"
-  cp "$source_root/LICENSE" "$install_root/LICENSE"
-  cp "$source_root/pyproject.toml" "$install_root/pyproject.toml"
+  set -- \
+    --source "$source_root" \
+    --root "$install_root" \
+    --launcher "$launcher_path" \
+    --python "$python_bin" \
+    --claim-root
+  if [ "$legacy_flat" -eq 1 ]; then
+    set -- "$@" --allow-legacy-dispatcher
+  fi
+  if [ "$legacy_unmarked" -eq 1 ]; then
+    set -- "$@" --allow-legacy-root
+  fi
+  "$python_bin" -I -B -c "$installer_bootstrap" "$source_root/src" "$@"
+else
+  "$python_bin" -I -B -c "$installer_bootstrap" "$source_root/src" \
+    --source "$source_root" \
+    --root "$install_root" \
+    --launcher "$launcher_path" \
+    --python "$python_bin" \
+    --checkout
 fi
-chmod +x "$install_root/bin/llm-hud"
-
-# A wrapper pinning the detected interpreter, not a symlink: the launcher's
-# `env python3` shebang may resolve to a Python older than 3.11. Written to a
-# temp file and renamed so a concurrent status-line refresh never sees a
-# partial or non-executable launcher.
-mkdir -p "$bin_dir"
-wrapper_tmp="$bin_dir/.llm-hud.$$"
-{
-  printf '#!/bin/sh\n'
-  printf 'exec %s %s "$@"\n' \
-    "$(sh_quote "$python_bin")" "$(sh_quote "$install_root/bin/llm-hud")"
-} >"$wrapper_tmp"
-chmod +x "$wrapper_tmp"
-mv -f "$wrapper_tmp" "$bin_dir/llm-hud"
 
 configure_status=0
-LLM_HUD_COMMAND_PATH="$bin_dir/llm-hud" \
-  "$python_bin" "$install_root/bin/llm-hud" install || configure_status=$?
+LLM_HUD_COMMAND_PATH="$launcher_path" \
+  "$launcher_path" install || configure_status=$?
 
 printf '%s\n' "LLM HUD installed."
 printf 'Command: %s\n' "$bin_dir/llm-hud"
 printf 'Check:   %s doctor\n' "$bin_dir/llm-hud"
 if [ "$configure_status" -ne 0 ]; then
-  printf '%s\n' "Provider configuration did not complete; run the install command again once a supported CLI is installed."
+  printf '%s\n' \
+    "Provider configuration did not complete; rerun after installing a supported CLI."
 fi
 
 case ":$PATH:" in

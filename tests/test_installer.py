@@ -1,19 +1,36 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+
+from llm_hud.runtime import initialize_layout, read_activation, validate_runtime
 
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "install.sh"
 MARKER = ".llm-hud-install-root"
+LAYOUT = ".llm-hud-layout"
 
 
-def run_installer(root: Path, install_dir: Path) -> subprocess.CompletedProcess[str]:
+def make_legacy_runtime(install_dir: Path) -> None:
+    for name in ("src", "bin"):
+        shutil.copytree(ROOT / name, install_dir / name)
+    for name in ("README.md", "LICENSE", "pyproject.toml"):
+        shutil.copy2(ROOT / name, install_dir / name)
+
+
+def installer_environment(
+    root: Path,
+    install_dir: Path,
+    *,
+    overrides: dict[str, str] | None = None,
+) -> dict[str, str]:
     home = root / "home"
     home.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
@@ -32,10 +49,23 @@ def run_installer(root: Path, install_dir: Path) -> subprocess.CompletedProcess[
             "LLM_HUD_PYTHON": sys.executable,
         }
     )
+    if overrides:
+        env.update(overrides)
+    return env
+
+
+def run_installer(
+    root: Path,
+    install_dir: Path,
+    *,
+    cwd: Path = ROOT,
+    installer: Path = INSTALLER,
+    overrides: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [str(INSTALLER)],
-        cwd=ROOT,
-        env=env,
+        [str(installer)],
+        cwd=cwd,
+        env=installer_environment(root, install_dir, overrides=overrides),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -45,6 +75,117 @@ def run_installer(root: Path, install_dir: Path) -> subprocess.CompletedProcess[
 
 
 class InstallerRootSafetyTests(unittest.TestCase):
+    def test_stdin_bootstrap_downloads_and_installs_a_versioned_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "llm-hud.tar.gz"
+            with tarfile.open(archive, "w:gz") as bundle:
+                for path in sorted(ROOT.rglob("*")):
+                    relative = path.relative_to(ROOT)
+                    if any(
+                        part == ".git" or part == "__pycache__"
+                        for part in relative.parts
+                    ) or path.suffix in (".pyc", ".pyo"):
+                        continue
+                    bundle.add(
+                        path,
+                        arcname=Path("llm-hud-main") / relative,
+                        recursive=False,
+                    )
+            install_dir = root / "runtime"
+            environment = installer_environment(
+                root,
+                install_dir,
+                overrides={"LLM_HUD_TARBALL_URL": archive.as_uri()},
+            )
+
+            result = subprocess.run(
+                ["sh"],
+                input=INSTALLER.read_text(),
+                cwd=root,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            current = read_activation(install_dir)
+            assert current is not None
+            validate_runtime(install_dir, current.active)
+            launcher = root / "launcher-bin" / "llm-hud"
+            launched = subprocess.run(
+                [str(launcher), "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            self.assertEqual(launched.returncode, 0, launched.stderr)
+
+    def test_current_directory_cannot_shadow_the_downloaded_installer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            install_dir = root / "runtime"
+            attacker = root / "attacker"
+            package = attacker / "llm_hud"
+            package.mkdir(parents=True)
+            sentinel = root / "shadow-ran"
+            (package / "__init__.py").write_text("")
+            (package / "installer.py").write_text(
+                f"from pathlib import Path\nPath({str(sentinel)!r}).write_text('ran')\n"
+            )
+
+            result = run_installer(root, install_dir, cwd=attacker)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(sentinel.exists())
+            self.assertIsNotNone(read_activation(install_dir))
+
+    def test_checkout_path_with_a_colon_is_not_split_as_pythonpath(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkout = root / "checkout:with-colon"
+            shutil.copytree(
+                ROOT,
+                checkout,
+                ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+            )
+            install_dir = root / "runtime"
+
+            result = run_installer(
+                root,
+                install_dir,
+                cwd=checkout,
+                installer=checkout / "install.sh",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIsNotNone(read_activation(install_dir))
+
+    def test_canonical_line_break_path_is_rejected_before_ownership(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            install_dir = root / "runtime"
+            actual_bin = root / "bin-with-newline\n"
+            actual_bin.mkdir()
+            bin_alias = root / "safe-bin-alias"
+            bin_alias.symlink_to(actual_bin, target_is_directory=True)
+
+            result = run_installer(
+                root,
+                install_dir,
+                overrides={"LLM_HUD_BIN_DIR": str(bin_alias)},
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("canonical-bin-dir", result.stderr)
+            self.assertFalse((install_dir / MARKER).exists())
+            self.assertFalse((install_dir / "activation").exists())
+
     def test_fresh_dedicated_directory_gets_an_ownership_marker(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -57,9 +198,38 @@ class InstallerRootSafetyTests(unittest.TestCase):
                 (install_dir / MARKER).read_text().strip(),
                 "llm-hud-install-root-v1",
             )
+            self.assertEqual(
+                (install_dir / LAYOUT).read_text().strip(),
+                "llm-hud-versioned-layout-v1",
+            )
+            activation = read_activation(install_dir)
+            assert activation is not None
+            validate_runtime(install_dir, activation.active)
+            self.assertIsNone(activation.previous)
+            self.assertTrue((install_dir / "control" / "runtime_control.py").is_file())
+            self.assertTrue((install_dir / "bin" / "llm-hud").is_file())
+            launcher = root / "launcher-bin" / "llm-hud"
+            self.assertIn("llm-hud-managed-launcher-v1", launcher.read_text())
+            version = subprocess.run(
+                [str(launcher), "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            self.assertEqual(version.returncode, 0, version.stderr)
+            self.assertEqual(version.stdout.strip(), "llm-hud 0.1.0")
 
+            activation_before = (install_dir / "activation").read_bytes()
+            versions_before = sorted(path.name for path in (install_dir / "versions").iterdir())
             repeated = run_installer(root, install_dir)
             self.assertEqual(repeated.returncode, 0, repeated.stderr)
+            self.assertEqual((install_dir / "activation").read_bytes(), activation_before)
+            self.assertEqual(
+                sorted(path.name for path in (install_dir / "versions").iterdir()),
+                versions_before,
+            )
 
     def test_refuses_to_use_home_as_the_install_root(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -108,14 +278,55 @@ class InstallerRootSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             install_dir = root / "home" / ".local" / "share" / "llm-hud"
-            first = run_installer(root, install_dir)
-            self.assertEqual(first.returncode, 0, first.stderr)
-            (install_dir / MARKER).unlink()
+            install_dir.mkdir(parents=True)
+            make_legacy_runtime(install_dir)
 
-            second = run_installer(root, install_dir)
+            result = run_installer(root, install_dir)
 
-            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue((install_dir / MARKER).is_file())
+            activation = read_activation(install_dir)
+            assert activation is not None
+            self.assertIsNone(activation.previous)
+            self.assertTrue((install_dir / "src" / "llm_hud" / "cli.py").is_file())
+
+    def test_migrates_a_marked_flat_legacy_installation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            install_dir = root / "runtime"
+            install_dir.mkdir()
+            make_legacy_runtime(install_dir)
+            (install_dir / MARKER).write_text("llm-hud-install-root-v1\n")
+
+            result = run_installer(root, install_dir)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            activation = read_activation(install_dir)
+            assert activation is not None
+            self.assertIsNone(activation.previous)
+
+    def test_resumes_a_legacy_migration_after_layout_initialization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            install_dir = root / "home" / ".local" / "share" / "llm-hud"
+            install_dir.mkdir(parents=True)
+            make_legacy_runtime(install_dir)
+            (install_dir / MARKER).write_text("llm-hud-install-root-v1\n")
+            initialize_layout(install_dir)
+            launcher = root / "launcher-bin" / "llm-hud"
+            launcher.parent.mkdir()
+            launcher.write_text(
+                "#!/bin/sh\n"
+                f"exec '{sys.executable}' "
+                f"'{install_dir.resolve() / 'bin' / 'llm-hud'}' \"$@\"\n"
+            )
+            launcher.chmod(0o755)
+
+            result = run_installer(root, install_dir)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("llm-hud-managed-launcher-v1", launcher.read_text())
+            self.assertIsNotNone(read_activation(install_dir))
 
     def test_does_not_adopt_a_source_tree_as_a_legacy_installation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -143,12 +354,17 @@ class InstallerRootSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             cli_before = (ROOT / "src/llm_hud/cli.py").read_bytes()
+            launcher_before = (ROOT / "bin/llm-hud").read_bytes()
+            launcher_mode = (ROOT / "bin/llm-hud").stat().st_mode
 
             result = run_installer(root, ROOT)
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((ROOT / "src/llm_hud/cli.py").read_bytes(), cli_before)
+            self.assertEqual((ROOT / "bin/llm-hud").read_bytes(), launcher_before)
+            self.assertEqual((ROOT / "bin/llm-hud").stat().st_mode, launcher_mode)
             self.assertFalse((ROOT / MARKER).exists())
+            self.assertFalse((ROOT / LAYOUT).exists())
 
     def test_rejects_an_unrecognized_marker(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -161,6 +377,52 @@ class InstallerRootSafetyTests(unittest.TestCase):
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Refusing unrecognized install marker", result.stderr)
+
+    def test_refuses_to_replace_a_foreign_external_launcher(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            install_dir = root / "runtime"
+            launcher = root / "launcher-bin" / "llm-hud"
+            launcher.parent.mkdir()
+            launcher.write_text("user command")
+
+            result = run_installer(root, install_dir)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unmanaged launcher", result.stderr)
+            self.assertEqual(launcher.read_text(), "user command")
+            self.assertFalse((install_dir / "activation").exists())
+
+    def test_paths_with_spaces_and_single_quotes_install_successfully(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "space's root"
+            root.mkdir()
+            install_dir = root / "runtime space's"
+
+            result = run_installer(root, install_dir)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            launcher = root / "launcher-bin" / "llm-hud"
+            completed = subprocess.run(
+                [str(launcher), "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_newline_install_path_is_rejected_before_it_is_created(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            install_dir = Path(f"{root}/bad\npath")
+
+            result = run_installer(root, install_dir)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("carriage return or newline", result.stderr)
+            self.assertFalse(install_dir.exists())
 
 
 if __name__ == "__main__":

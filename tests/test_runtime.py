@@ -265,6 +265,8 @@ class ActivationTests(unittest.TestCase):
             ("control", True),
             (ACTIVATION_NAME, False),
             (".llm-hud-update.lock", False),
+            (".llm-hud-stable.json", False),
+            (".llm-hud-launcher-state.json", False),
         ):
             with self.subTest(relative=relative), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)

@@ -27,6 +27,8 @@ RUNTIME_MARKER_NAME = ".llm-hud-runtime.json"
 LOCK_NAME = ".llm-hud-update.lock"
 VERSIONS_DIR_NAME = "versions"
 CONTROL_DIR_NAME = "control"
+STABLE_STATE_NAME = ".llm-hud-stable.json"
+LAUNCHER_STATE_NAME = ".llm-hud-launcher-state.json"
 NO_PREVIOUS = "-"
 _RELEASE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -185,6 +187,8 @@ def initialize_layout(root: Path) -> None:
             root / CONTROL_DIR_NAME,
             root / ACTIVATION_NAME,
             root / LOCK_NAME,
+            root / STABLE_STATE_NAME,
+            root / LAUNCHER_STATE_NAME,
         )
         for path in reserved:
             try:
@@ -400,6 +404,38 @@ def activate(
         return _activate_unlocked(
             root, release_id, expected_active=expected_active
         )
+
+
+def restore_activation(
+    root: Path,
+    previous: Activation,
+    *,
+    expected_active: str,
+    lock_timeout: float = 10.0,
+) -> Activation:
+    """Restore an exact earlier activation after a failed installation."""
+    validate_release_id(expected_active)
+    with RuntimeLock(root, timeout=lock_timeout):
+        current = read_activation(root)
+        actual_active = current.active if current is not None else None
+        if actual_active != expected_active:
+            raise RuntimeLayoutError(
+                f"active runtime changed from {expected_active!r} "
+                f"to {actual_active!r}"
+            )
+        validate_runtime(root, previous.active)
+        try:
+            atomic_write_text(
+                root / ACTIVATION_NAME,
+                format_activation(previous),
+                mode=0o600,
+                follow_symlinks=False,
+            )
+        except OSError as error:
+            raise RuntimeLayoutError(
+                f"cannot restore activation record: {error}"
+            ) from error
+        return previous
 
 
 def _rollback_unlocked(
@@ -620,6 +656,33 @@ def source_digest(root: Path, *, reject_python_cache: bool = False) -> str:
     return digest.hexdigest()
 
 
+def validate_staged_runtime(
+    staging: Path,
+    version: str,
+    *,
+    expected_content_sha256: str | None = None,
+) -> RuntimeMetadata:
+    version = validate_version(version)
+    _require_runtime_shape(staging, sealed=False)
+    embedded_version = embedded_runtime_version(staging)
+    if embedded_version != version:
+        raise RuntimeLayoutError(
+            f"staged runtime version is {embedded_version}, expected {version}"
+        )
+    digest = source_digest(staging, reject_python_cache=True)
+    if expected_content_sha256 is not None:
+        if not _SHA256.fullmatch(expected_content_sha256):
+            raise RuntimeLayoutError(
+                "expected content digest must be a lowercase SHA-256"
+            )
+        if digest != expected_content_sha256:
+            raise RuntimeLayoutError(
+                "staged runtime digest does not match the expected value"
+            )
+    release_id = validate_release_id(f"{version}-{digest[:12]}")
+    return RuntimeMetadata(release_id, version, digest)
+
+
 def _finalize_runtime_unlocked(
     root: Path,
     staging: Path,
@@ -643,25 +706,12 @@ def _finalize_runtime_unlocked(
         staging_metadata.st_mode
     ):
         raise RuntimeLayoutError(f"staged runtime is not a regular directory: {staging}")
-    _require_runtime_shape(staging, sealed=False)
-
-    embedded_version = embedded_runtime_version(staging)
-    if embedded_version != version:
-        raise RuntimeLayoutError(
-            f"staged runtime version is {embedded_version}, expected {version}"
-        )
-    digest = source_digest(staging, reject_python_cache=True)
-    if expected_content_sha256 is not None:
-        if not _SHA256.fullmatch(expected_content_sha256):
-            raise RuntimeLayoutError(
-                "expected content digest must be a lowercase SHA-256"
-            )
-        if digest != expected_content_sha256:
-            raise RuntimeLayoutError(
-                "staged runtime digest does not match the expected value"
-            )
-    release_id = validate_release_id(f"{version}-{digest[:12]}")
-    metadata = RuntimeMetadata(release_id, version, digest)
+    metadata = validate_staged_runtime(
+        staging,
+        version,
+        expected_content_sha256=expected_content_sha256,
+    )
+    release_id = metadata.release_id
     _write_runtime_metadata(staging, metadata)
     _require_runtime_shape(staging, sealed=True)
     _fsync_runtime_tree(staging)

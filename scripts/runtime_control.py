@@ -475,11 +475,7 @@ def rollback(root: Path, *, lock_timeout: float = 10.0) -> Activation:
         return updated
 
 
-def dispatch(root: Path, arguments: Sequence[str]) -> int:
-    root = Path(root)
-    _require_layout(root)
-    activation, _ = _read_activation(root)
-    runtime = _validate_runtime(root, activation.active)
+def _dispatch_runtime(root: Path, runtime: Path, arguments: Sequence[str]) -> int:
     if any(name == "llm_hud" or name.startswith("llm_hud.") for name in sys.modules):
         raise ControlError("runtime package was loaded before active runtime validation")
     source = runtime / "src"
@@ -494,6 +490,22 @@ def dispatch(root: Path, arguments: Sequence[str]) -> int:
         return int(main())
     finally:
         sys.argv = previous_argv
+
+
+def dispatch(root: Path, arguments: Sequence[str]) -> int:
+    root = Path(root)
+    _require_layout(root)
+    activation, _ = _read_activation(root)
+    runtime = _validate_runtime(root, activation.active)
+    return _dispatch_runtime(root, runtime, arguments)
+
+
+def preflight(root: Path, release_id: str, arguments: Sequence[str]) -> int:
+    """Dispatch an immutable release without changing the activation record."""
+    root = Path(root)
+    _require_layout(root)
+    runtime = _validate_runtime(root, release_id)
+    return _dispatch_runtime(root, runtime, arguments)
 
 
 def run(root: Path, arguments: Sequence[str]) -> int:
@@ -511,6 +523,8 @@ def run(root: Path, arguments: Sequence[str]) -> int:
 def _main(arguments: Sequence[str]) -> int:
     if len(arguments) < 1:
         raise ControlError("usage: runtime_control.py INSTALL_ROOT [rollback | COMMAND ...]")
+    if len(arguments) >= 3 and arguments[1] == "--preflight-release":
+        return preflight(Path(arguments[0]), arguments[2], arguments[3:])
     return run(Path(arguments[0]), arguments[1:])
 
 

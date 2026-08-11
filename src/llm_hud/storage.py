@@ -163,21 +163,21 @@ def atomic_write_text(
         if target.exists() or target.is_symlink():
             raise
 
+    target_mode = (
+        mode
+        if mode is not None
+        else existing_mode
+        if existing_mode is not None
+        else 0o600
+    )
     fd, temp_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
     temp_path = Path(temp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(content)
+            os.fchmod(handle.fileno(), target_mode)
             handle.flush()
             os.fsync(handle.fileno())
-        target_mode = (
-            mode
-            if mode is not None
-            else existing_mode
-            if existing_mode is not None
-            else 0o600
-        )
-        os.chmod(temp_path, target_mode)
         if not follow_symlinks:
             try:
                 final_metadata = target.lstat()
