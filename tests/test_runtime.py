@@ -131,6 +131,47 @@ class ActivationTests(unittest.TestCase):
 
             self.assertEqual(activate(root, third), Activation(third, second))
 
+    def test_broken_active_can_be_repaired_without_preserving_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            initialize_owned_layout(root)
+            first = create_runtime(root, "first", "1.0.0")
+            second = create_runtime(root, "second", "2.0.0")
+            activate(root, first)
+            (runtime_path(root, first) / "README.md").write_text("tampered")
+
+            self.assertEqual(activate(root, second), Activation(second))
+
+    def test_repair_preserves_only_a_healthy_previous_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            initialize_owned_layout(root)
+            first = create_runtime(root, "first", "1.0.0")
+            second = create_runtime(root, "second", "2.0.0")
+            third = create_runtime(root, "third", "3.0.0")
+            activate(root, first)
+            activate(root, second)
+            (runtime_path(root, second) / "README.md").write_text("tampered")
+
+            self.assertEqual(activate(root, third), Activation(third, first))
+            activate(root, first)
+            (runtime_path(root, first) / "README.md").write_text("also tampered")
+            (runtime_path(root, third) / "README.md").write_text("tampered too")
+            fourth = create_runtime(root, "fourth", "4.0.0")
+            self.assertEqual(activate(root, fourth), Activation(fourth))
+
+    def test_repairing_directly_to_the_previous_does_not_self_reference(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            initialize_owned_layout(root)
+            first = create_runtime(root, "first", "1.0.0")
+            second = create_runtime(root, "second", "2.0.0")
+            activate(root, first)
+            activate(root, second)
+            (runtime_path(root, second) / "README.md").write_text("tampered")
+
+            self.assertEqual(activate(root, first), Activation(first))
+
     def test_broken_previous_blocks_rollback_without_changing_activation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

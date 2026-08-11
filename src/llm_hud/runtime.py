@@ -357,13 +357,25 @@ def _activate_unlocked(
             raise RuntimeLayoutError(
                 f"active runtime changed from {expected_active!r} to {actual_active!r}"
             )
+    previous: str | None = None
     if current is not None:
-        validate_runtime(root, current.active)
         if current.active == release_id:
             return current
+        try:
+            validate_runtime(root, current.active)
+        except RuntimeLayoutError:
+            if current.previous is not None and current.previous != release_id:
+                try:
+                    validate_runtime(root, current.previous)
+                except RuntimeLayoutError:
+                    pass
+                else:
+                    previous = current.previous
+        else:
+            previous = current.active
     updated = Activation(
         active=release_id,
-        previous=current.active if current is not None else None,
+        previous=previous,
     )
     try:
         atomic_write_text(
