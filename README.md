@@ -39,7 +39,7 @@ gpt-5.6 xhigh · ~/projects/example · weekly 63% left · Context 98% left
 
 需要 Python 3.11 或更高版本。
 
-当前项目处于开发阶段，下面的命令会从 GitHub `main` 分支安装：
+下面的命令会安装最新的 GitHub Release：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/codermali/llm-hud/main/install.sh | sh
@@ -72,12 +72,17 @@ LLM_HUD_PYTHON=/path/to/python3.11 ./install.sh
 | --- | --- | --- |
 | `LLM_HUD_INSTALL_DIR` | 运行时安装目录 | `~/.local/share/llm-hud` |
 | `LLM_HUD_BIN_DIR` | 命令安装目录 | `~/.local/bin` |
-| `LLM_HUD_TARBALL_URL` | 远程源码包地址 | GitHub `main` 分支压缩包 |
+| `LLM_HUD_TARBALL_URL` | 自定义源码包地址 | 最新 GitHub Release |
+| `LLM_HUD_CHECKSUM_URL` | 自定义 SHA-256 清单地址 | 最新 Release 的 `SHA256SUMS` |
+
+自定义 `LLM_HUD_TARBALL_URL` 时，建议同时提供对应的
+`LLM_HUD_CHECKSUM_URL`；后者未设置时，自定义下载包不会执行 SHA-256 校验。
 
 ## 更新与回退
 
-重新运行安装命令即可更新。安装器会先复制并验证新运行时，验证通过后再切换当前
-版本；安装失败时会继续使用更新前的版本。提供方配置不会因为运行时更新而被重置。
+重新运行同一条安装命令即可更新到最新发布版本。安装器会先校验下载包的 SHA-256，
+再复制并验证新运行时；全部通过后才切换当前版本。安装失败时会继续使用更新前的
+版本，提供方配置也不会因为运行时更新而被重置。
 
 需要回到上一个已安装版本时运行：
 
@@ -86,9 +91,6 @@ llm-hud rollback
 ```
 
 `rollback` 只切换 LLM HUD 运行时，不修改 Claude Code 或 Codex CLI 的配置。
-
-> 正式发布前，远程安装入口仍需从 `main` 分支改为带校验值的 GitHub Release。
-> 因此当前的一行安装命令适合测试，不应视为固定版本安装。
 
 ## 常用命令
 

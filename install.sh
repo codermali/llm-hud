@@ -6,8 +6,16 @@
 #
 set -eu
 
-default_repo_tarball=https://github.com/codermali/llm-hud/archive/refs/heads/main.tar.gz
-repo_tarball=${LLM_HUD_TARBALL_URL:-"$default_repo_tarball"}
+default_release_base=https://github.com/codermali/llm-hud/releases/latest/download
+default_repo_tarball=$default_release_base/llm-hud.tar.gz
+default_repo_checksum=$default_release_base/SHA256SUMS
+if [ "${LLM_HUD_TARBALL_URL+x}" = x ]; then
+  repo_tarball=$LLM_HUD_TARBALL_URL
+  repo_checksum=${LLM_HUD_CHECKSUM_URL:-}
+else
+  repo_tarball=$default_repo_tarball
+  repo_checksum=${LLM_HUD_CHECKSUM_URL:-"$default_repo_checksum"}
+fi
 install_root=${LLM_HUD_INSTALL_DIR:-"$HOME/.local/share/llm-hud"}
 bin_dir=${LLM_HUD_BIN_DIR:-"$HOME/.local/bin"}
 install_marker_name=.llm-hud-install-root
@@ -42,6 +50,8 @@ canonical_directory() {
 reject_line_break LLM_HUD_INSTALL_DIR "$install_root"
 reject_line_break LLM_HUD_BIN_DIR "$bin_dir"
 reject_line_break LLM_HUD_PYTHON "${LLM_HUD_PYTHON:-}"
+reject_line_break LLM_HUD_TARBALL_URL "$repo_tarball"
+reject_line_break LLM_HUD_CHECKSUM_URL "$repo_checksum"
 reject_line_break HOME "$HOME"
 reject_line_break PATH "$PATH"
 reject_line_break installer-path "$0"
@@ -92,6 +102,17 @@ find_python() {
     fi
   done
   return 1
+}
+
+download_file() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL -o "$2" "$1"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$2" "$1"
+  else
+    printf '%s\n' "Neither curl nor wget is available to download llm-hud." >&2
+    exit 1
+  fi
 }
 
 python_bin=${LLM_HUD_PYTHON:-$(find_python || true)}
@@ -145,13 +166,34 @@ else
   archive="$cleanup_dir/llm-hud.tar.gz"
   # Download to a file first: in POSIX sh a pipeline reports only tar's status,
   # and bsdtar exits 0 on empty input, which would hide a failed download.
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL -o "$archive" "$repo_tarball"
-  elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$archive" "$repo_tarball"
-  else
-    printf '%s\n' "Neither curl nor wget is available to download llm-hud." >&2
-    exit 1
+  download_file "$repo_tarball" "$archive"
+  if [ -n "$repo_checksum" ]; then
+    checksum="$cleanup_dir/SHA256SUMS"
+    printf 'Verifying llm-hud with %s\n' "$repo_checksum"
+    download_file "$repo_checksum" "$checksum"
+    "$python_bin" -I -B -c '
+import hashlib
+import pathlib
+import sys
+
+checksum_path = pathlib.Path(sys.argv[1])
+archive_path = pathlib.Path(sys.argv[2])
+matches = []
+for line in checksum_path.read_text(encoding="ascii").splitlines():
+    fields = line.split()
+    if len(fields) == 2 and fields[1].lstrip("*") == "llm-hud.tar.gz":
+        matches.append(fields[0])
+if (
+    len(matches) != 1
+    or len(matches[0]) != 64
+    or any(character not in "0123456789abcdef" for character in matches[0])
+):
+    raise SystemExit("llm-hud: invalid SHA256SUMS")
+with archive_path.open("rb") as archive_file:
+    actual = hashlib.file_digest(archive_file, "sha256").hexdigest()
+if actual != matches[0]:
+    raise SystemExit("llm-hud: release archive checksum mismatch")
+' "$checksum" "$archive"
   fi
   tar -xzf "$archive" -C "$cleanup_dir"
   source_root=$(find "$cleanup_dir" -mindepth 1 -maxdepth 1 -type d -print | head -n 1)

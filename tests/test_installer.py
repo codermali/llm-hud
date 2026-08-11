@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -23,6 +24,22 @@ def make_legacy_runtime(install_dir: Path) -> None:
         shutil.copytree(ROOT / name, install_dir / name)
     for name in ("README.md", "LICENSE", "pyproject.toml"):
         shutil.copy2(ROOT / name, install_dir / name)
+
+
+def make_source_archive(archive: Path) -> None:
+    with tarfile.open(archive, "w:gz") as bundle:
+        for path in sorted(ROOT.rglob("*")):
+            relative = path.relative_to(ROOT)
+            if any(
+                part == ".git" or part == "__pycache__"
+                for part in relative.parts
+            ) or path.suffix in (".pyc", ".pyo"):
+                continue
+            bundle.add(
+                path,
+                arcname=Path("llm-hud-main") / relative,
+                recursive=False,
+            )
 
 
 def installer_environment(
@@ -79,24 +96,18 @@ class InstallerRootSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             archive = root / "llm-hud.tar.gz"
-            with tarfile.open(archive, "w:gz") as bundle:
-                for path in sorted(ROOT.rglob("*")):
-                    relative = path.relative_to(ROOT)
-                    if any(
-                        part == ".git" or part == "__pycache__"
-                        for part in relative.parts
-                    ) or path.suffix in (".pyc", ".pyo"):
-                        continue
-                    bundle.add(
-                        path,
-                        arcname=Path("llm-hud-main") / relative,
-                        recursive=False,
-                    )
+            make_source_archive(archive)
+            checksum = root / "SHA256SUMS"
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            checksum.write_text(f"{digest}  llm-hud.tar.gz\n")
             install_dir = root / "runtime"
             environment = installer_environment(
                 root,
                 install_dir,
-                overrides={"LLM_HUD_TARBALL_URL": archive.as_uri()},
+                overrides={
+                    "LLM_HUD_TARBALL_URL": archive.as_uri(),
+                    "LLM_HUD_CHECKSUM_URL": checksum.as_uri(),
+                },
             )
 
             result = subprocess.run(
@@ -125,6 +136,39 @@ class InstallerRootSafetyTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(launched.returncode, 0, launched.stderr)
+
+    def test_stdin_bootstrap_rejects_a_wrong_release_checksum(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "llm-hud.tar.gz"
+            make_source_archive(archive)
+            checksum = root / "SHA256SUMS"
+            checksum.write_text(f"{'0' * 64}  llm-hud.tar.gz\n")
+            install_dir = root / "runtime"
+            environment = installer_environment(
+                root,
+                install_dir,
+                overrides={
+                    "LLM_HUD_TARBALL_URL": archive.as_uri(),
+                    "LLM_HUD_CHECKSUM_URL": checksum.as_uri(),
+                },
+            )
+
+            result = subprocess.run(
+                ["sh"],
+                input=INSTALLER.read_text(),
+                cwd=root,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("checksum mismatch", result.stderr)
+            self.assertFalse(install_dir.exists())
 
     def test_current_directory_cannot_shadow_the_downloaded_installer(self):
         with tempfile.TemporaryDirectory() as directory:
