@@ -218,6 +218,30 @@ class ActivationTests(unittest.TestCase):
                 initialize_layout(root)
             self.assertFalse((root / LAYOUT_MARKER_NAME).exists())
 
+    def test_layout_cannot_claim_preexisting_reserved_paths(self):
+        for relative, is_directory in (
+            ("versions", True),
+            ("control", True),
+            (ACTIVATION_NAME, False),
+            (".llm-hud-update.lock", False),
+        ):
+            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / INSTALL_MARKER_NAME).write_text(
+                    f"{INSTALL_MARKER_VALUE}\n"
+                )
+                reserved = root / relative
+                if is_directory:
+                    reserved.mkdir()
+                else:
+                    reserved.write_text("user data")
+
+                with self.assertRaisesRegex(RuntimeLayoutError, "refusing to claim"):
+                    initialize_layout(root)
+
+                self.assertFalse((root / LAYOUT_MARKER_NAME).exists())
+                self.assertTrue(reserved.exists())
+
     def test_wrong_or_symlinked_ownership_marker_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

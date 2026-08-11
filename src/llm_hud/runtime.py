@@ -26,6 +26,7 @@ ACTIVATION_PREFIX = "llm-hud-activation-v1"
 RUNTIME_MARKER_NAME = ".llm-hud-runtime.json"
 LOCK_NAME = ".llm-hud-update.lock"
 VERSIONS_DIR_NAME = "versions"
+CONTROL_DIR_NAME = "control"
 NO_PREVIOUS = "-"
 _RELEASE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -179,6 +180,24 @@ def initialize_layout(root: Path) -> None:
     marker_path = root / LAYOUT_MARKER_NAME
     marker = _read_owned_text(marker_path, "layout marker")
     if marker is None:
+        reserved = (
+            versions,
+            root / CONTROL_DIR_NAME,
+            root / ACTIVATION_NAME,
+            root / LOCK_NAME,
+        )
+        for path in reserved:
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                raise RuntimeLayoutError(
+                    f"cannot inspect reserved runtime path {path}: {error}"
+                ) from error
+            raise RuntimeLayoutError(
+                f"refusing to claim pre-existing reserved runtime path: {path}"
+            )
         try:
             atomic_write_text(
                 marker_path,
