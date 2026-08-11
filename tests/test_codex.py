@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import tomllib
 import unittest
@@ -105,6 +106,72 @@ class CodexProviderTests(unittest.TestCase):
                 result = provider.uninstall()
                 self.assertEqual(result.status, "skipped")
                 self.assertEqual(status_line(config), changed)
+
+    def test_future_state_schema_blocks_install_without_touching_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            original = '[tui]\nstatus_line = ["current-dir"]\n'
+            config.write_text(original)
+            state_path = root / "state" / "providers" / "codex.json"
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text(json.dumps({"schema": 999}))
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                result = CodexProvider().install("ignored")
+
+            self.assertEqual(result.status, "error")
+            self.assertIn("newer than supported", result.message)
+            self.assertEqual(config.read_text(), original)
+            self.assertEqual(json.loads(state_path.read_text())["schema"], 999)
+
+    def test_malformed_state_fields_block_install(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            config.write_text("[tui]\n")
+            state_path = root / "state" / "providers" / "codex.json"
+            state_path.parent.mkdir(parents=True)
+            malformed = {
+                "schema": 1,
+                "config_path": str(config),
+                "original_present": False,
+                "original_items": [],
+                "installed_items": [42],
+            }
+            state_path.write_text(json.dumps(malformed))
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                result = CodexProvider().install("ignored")
+
+            self.assertEqual(result.status, "error")
+            self.assertIn("installed_items", result.message)
+            self.assertEqual(json.loads(state_path.read_text()), malformed)
+
+    def test_state_for_another_config_file_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.toml"
+            second = root / "second.toml"
+            state_dir = root / "state"
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(first),
+                LLM_HUD_STATE_DIR=str(state_dir),
+            ):
+                CodexProvider().install("ignored")
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(second),
+                LLM_HUD_STATE_DIR=str(state_dir),
+            ):
+                result = CodexProvider().install("ignored")
+
+            self.assertEqual(result.status, "error")
+            self.assertIn("not current path", result.message)
+            self.assertFalse(second.exists())
 
 
 if __name__ == "__main__":

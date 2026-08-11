@@ -223,6 +223,109 @@ class ClaudeProviderTests(unittest.TestCase):
             self.assertEqual(restored["statusLine"]["command"], "printf prior")
             self.assertEqual(restored["statusLine"]["padding"], 2)
 
+    def test_corrupt_state_blocks_install_without_touching_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "settings.json"
+            settings.write_text('{"theme": "dark"}\n')
+            state_path = root / "state" / "providers" / "claude.json"
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text("{broken")
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                result = ClaudeProvider().install("/opt/llm-hud")
+
+            self.assertEqual(result.status, "error")
+            self.assertIn("invalid installation state", result.message)
+            self.assertEqual(settings.read_text(), '{"theme": "dark"}\n')
+            self.assertEqual(state_path.read_text(), "{broken")
+
+    def test_incomplete_state_blocks_install_without_being_replaced(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "settings.json"
+            settings.write_text("{}\n")
+            state_path = root / "state" / "providers" / "claude.json"
+            state_path.parent.mkdir(parents=True)
+            incomplete = {
+                "schema": 2,
+                "settings_path": str(settings),
+                "original_present": False,
+                "original_status_line": None,
+                "installed_command": "/opt/llm-hud render claude",
+                "installed_status_line": {"type": "command", "command": "wrong"},
+            }
+            state_path.write_text(json.dumps(incomplete))
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                result = ClaudeProvider().install("/opt/llm-hud")
+
+            self.assertEqual(result.status, "error")
+            self.assertIn("inconsistent", result.message)
+            self.assertEqual(json.loads(state_path.read_text()), incomplete)
+
+    def test_future_state_schema_blocks_uninstall(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "settings.json"
+            state_dir = root / "state"
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(state_dir),
+            ):
+                provider = ClaudeProvider()
+                provider.install("/opt/llm-hud")
+                before = settings.read_text()
+                state_path = state_dir / "providers" / "claude.json"
+                state = json.loads(state_path.read_text())
+                state["schema"] = 999
+                state_path.write_text(json.dumps(state))
+                result = provider.uninstall()
+
+            self.assertEqual(result.status, "error")
+            self.assertIn("newer than supported", result.message)
+            self.assertEqual(settings.read_text(), before)
+            self.assertEqual(json.loads(state_path.read_text())["schema"], 999)
+
+    def test_state_for_another_settings_file_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.json"
+            second = root / "second.json"
+            state_dir = root / "state"
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(first),
+                LLM_HUD_STATE_DIR=str(state_dir),
+            ):
+                ClaudeProvider().install("/opt/llm-hud")
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(second),
+                LLM_HUD_STATE_DIR=str(state_dir),
+            ):
+                result = ClaudeProvider().install("/opt/llm-hud")
+
+            self.assertEqual(result.status, "error")
+            self.assertIn("not current path", result.message)
+            self.assertFalse(second.exists())
+
+    def test_render_ignores_invalid_state_and_still_outputs_hud(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_path = root / "state" / "providers" / "claude.json"
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text("invalid")
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(root / "settings.json"),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                output = render(b'{"model":{"display_name":"Opus"}}', color=False)
+
+            self.assertTrue(output.startswith("Claude · Opus\n"))
+
 
 if __name__ == "__main__":
     unittest.main()

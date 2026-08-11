@@ -10,7 +10,15 @@ from typing import Any
 from llm_hud.hud import HudSnapshot, UsageWindow, render_hud
 from llm_hud.paths import claude_settings_path, provider_state_path
 from llm_hud.providers.base import Provider, ProviderCapabilities, Result
-from llm_hud.storage import atomic_write_json, read_json
+from llm_hud.storage import (
+    StateFileError,
+    atomic_write_json,
+    read_provider_state,
+    validate_state_path,
+)
+
+
+STATE_SCHEMAS = frozenset((1, 2))
 
 
 def _is_llm_hud_command(command: object) -> bool:
@@ -45,7 +53,24 @@ def _installed_status_line_from_state(state: object) -> dict[str, Any] | None:
         return dict(installed) if isinstance(installed, dict) else None
     # Schema 1 did not store the complete installed value, but it can be
     # reconstructed deterministically from the saved original and command.
-    return _configured_status_line(state.get("original_status_line"), command)
+    if state.get("schema") == 1:
+        return _configured_status_line(state.get("original_status_line"), command)
+    return None
+
+
+def _validate_installation_state(state: dict[str, Any]) -> None:
+    if not isinstance(state.get("original_present"), bool):
+        raise StateFileError("installation state has no valid original_present flag")
+    if "original_status_line" not in state:
+        raise StateFileError("installation state has no original_status_line")
+    installed = _installed_status_line_from_state(state)
+    if installed is None:
+        raise StateFileError("installation state is incomplete")
+    if state["schema"] == 2 and (
+        installed.get("type") != "command"
+        or installed.get("command") != state.get("installed_command")
+    ):
+        raise StateFileError("installation state has inconsistent installed_status_line")
 
 
 def _remaining(window: object) -> float | None:
@@ -130,8 +155,16 @@ def render(raw: bytes, color: bool | None = None) -> str:
     if color is None:
         color = not bool(os.environ.get("NO_COLOR"))
     footer = render_footer(payload, color=color)
-    state = read_json(provider_state_path("claude"), {})
-    delegated = _delegate_output(raw, state if isinstance(state, dict) else {})
+    try:
+        state = read_provider_state(
+            provider_state_path("claude"), supported_schemas=STATE_SCHEMAS
+        )
+        if state is not None:
+            validate_state_path(state, "settings_path", claude_settings_path())
+            _validate_installation_state(state)
+    except StateFileError:
+        state = None
+    delegated = _delegate_output(raw, state or {})
     return f"{delegated}\n{footer}" if delegated else footer
 
 
@@ -153,18 +186,21 @@ class ClaudeProvider(Provider):
             return Result(self.id, "error", str(error))
 
         installed_command = shlex.join((command_path, "render", "claude"))
-        existing_state = read_json(state_path, {})
+        try:
+            existing_state = read_provider_state(
+                state_path, supported_schemas=STATE_SCHEMAS
+            )
+            if existing_state is not None:
+                validate_state_path(existing_state, "settings_path", settings_path)
+                _validate_installation_state(existing_state)
+        except StateFileError as error:
+            return Result(self.id, "error", str(error))
         current = settings.get("statusLine")
         current_command = current.get("command") if isinstance(current, dict) else None
 
-        if isinstance(existing_state, dict) and existing_state.get("installed_command"):
+        if existing_state is not None:
             previous_installed = _installed_status_line_from_state(existing_state)
-            if previous_installed is None:
-                return Result(
-                    self.id,
-                    "error",
-                    "installation state is incomplete; left statusLine untouched",
-                )
+            assert previous_installed is not None
             if current != previous_installed:
                 return Result(
                     self.id,
@@ -201,8 +237,14 @@ class ClaudeProvider(Provider):
     def uninstall(self) -> Result:
         settings_path = claude_settings_path()
         state_path = provider_state_path(self.id)
-        state = read_json(state_path, {})
-        if not isinstance(state, dict) or not state:
+        try:
+            state = read_provider_state(state_path, supported_schemas=STATE_SCHEMAS)
+            if state is not None:
+                validate_state_path(state, "settings_path", settings_path)
+                _validate_installation_state(state)
+        except StateFileError as error:
+            return Result(self.id, "error", str(error))
+        if state is None:
             return Result(self.id, "skipped", "no installation state")
         try:
             settings = _load_settings(settings_path)
@@ -211,12 +253,7 @@ class ClaudeProvider(Provider):
 
         current = settings.get("statusLine")
         installed = _installed_status_line_from_state(state)
-        if installed is None:
-            return Result(
-                self.id,
-                "error",
-                "installation state is incomplete; left statusLine untouched",
-            )
+        assert installed is not None
         if current != installed:
             return Result(
                 self.id,

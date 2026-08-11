@@ -8,12 +8,53 @@ from pathlib import Path
 from typing import Any
 
 
-def read_json(path: Path, default: Any = None) -> Any:
+class StateFileError(ValueError):
+    """An installation state file is present but unsafe to use."""
+
+
+def read_provider_state(
+    path: Path, *, supported_schemas: frozenset[int]
+) -> dict[str, Any] | None:
+    """Read provider state without treating corruption as an empty state."""
     try:
         with path.open("r", encoding="utf-8") as handle:
-            return json.load(handle)
-    except (OSError, json.JSONDecodeError):
-        return default
+            payload = json.load(handle)
+    except FileNotFoundError:
+        return None
+    except json.JSONDecodeError as error:
+        raise StateFileError(f"invalid installation state {path}: {error}") from error
+    except OSError as error:
+        raise StateFileError(f"cannot read installation state {path}: {error}") from error
+
+    if not isinstance(payload, dict):
+        raise StateFileError(f"installation state must be a JSON object: {path}")
+    schema = payload.get("schema")
+    if isinstance(schema, bool) or not isinstance(schema, int):
+        raise StateFileError(f"installation state has no valid schema: {path}")
+    if schema not in supported_schemas:
+        newest = max(supported_schemas)
+        if schema > newest:
+            detail = f"schema {schema} is newer than supported schema {newest}"
+        else:
+            detail = f"schema {schema} is not supported"
+        raise StateFileError(f"installation state {path} {detail}")
+    return payload
+
+
+def validate_state_path(state: dict[str, Any], key: str, current: Path) -> None:
+    """Reject state belonging to a different provider configuration file."""
+    saved = state.get(key)
+    if not isinstance(saved, str) or not saved:
+        raise StateFileError(f"installation state has no valid {key}")
+    try:
+        saved_path = Path(saved).expanduser().resolve(strict=False)
+        current_path = current.expanduser().resolve(strict=False)
+    except (OSError, ValueError, RuntimeError) as error:
+        raise StateFileError(f"cannot resolve installation state {key}: {error}") from error
+    if saved_path != current_path:
+        raise StateFileError(
+            f"installation state targets {saved_path}, not current path {current_path}"
+        )
 
 
 def atomic_write_text(path: Path, content: str, mode: int | None = None) -> None:

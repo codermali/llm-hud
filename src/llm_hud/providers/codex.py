@@ -5,7 +5,13 @@ from typing import Any
 
 from llm_hud.paths import codex_config_path, provider_state_path
 from llm_hud.providers.base import Provider, ProviderCapabilities, Result
-from llm_hud.storage import atomic_write_json, atomic_write_text, read_json
+from llm_hud.storage import (
+    StateFileError,
+    atomic_write_json,
+    atomic_write_text,
+    read_provider_state,
+    validate_state_path,
+)
 from llm_hud.toml_edit import remove_key, set_array
 
 
@@ -16,6 +22,7 @@ HUD_ITEMS = [
     "context-remaining",
 ]
 OBSOLETE_ITEMS = ["five-hour-limit"]
+STATE_SCHEMAS = frozenset((1,))
 
 
 def _load_config() -> tuple[str, dict[str, Any]]:
@@ -55,6 +62,15 @@ def _restore_items(current: list[str], state: dict[str, Any]) -> list[str] | Non
     return [*original, *extras]
 
 
+def _validate_installation_state(state: dict[str, Any]) -> None:
+    if not isinstance(state.get("original_present"), bool):
+        raise StateFileError("installation state has no valid original_present flag")
+    for key in ("original_items", "installed_items"):
+        value = state.get(key)
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise StateFileError(f"installation state has no valid {key}")
+
+
 class CodexProvider(Provider):
     id = "codex"
     command = "codex"
@@ -74,8 +90,16 @@ class CodexProvider(Provider):
         except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
             return Result(self.id, "error", f"cannot read {path}: {error}")
 
-        existing_state = read_json(state_path, {})
-        if isinstance(existing_state, dict) and existing_state.get("installed_items"):
+        try:
+            existing_state = read_provider_state(
+                state_path, supported_schemas=STATE_SCHEMAS
+            )
+            if existing_state is not None:
+                validate_state_path(existing_state, "config_path", path)
+                _validate_installation_state(existing_state)
+        except StateFileError as error:
+            return Result(self.id, "error", str(error))
+        if existing_state is not None and existing_state.get("installed_items"):
             original_present = bool(existing_state.get("original_present"))
             original_items = existing_state.get("original_items", [])
         else:
@@ -101,8 +125,14 @@ class CodexProvider(Provider):
     def uninstall(self) -> Result:
         path = codex_config_path()
         state_path = provider_state_path(self.id)
-        state = read_json(state_path, {})
-        if not isinstance(state, dict) or not state:
+        try:
+            state = read_provider_state(state_path, supported_schemas=STATE_SCHEMAS)
+            if state is not None:
+                validate_state_path(state, "config_path", path)
+                _validate_installation_state(state)
+        except StateFileError as error:
+            return Result(self.id, "error", str(error))
+        if state is None:
             return Result(self.id, "skipped", "no installation state")
         try:
             text, parsed = _load_config()
