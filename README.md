@@ -1,70 +1,96 @@
 # LLM HUD
 
-LLM HUD adds a compact usage display to each supported coding agent's own
-terminal interface. It does not create an iTerm2 status bar, macOS menu bar
-item, shell prompt, or background process.
+LLM HUD 为受支持的 AI 编程命令行工具配置简洁的终端状态栏。它不会创建
+iTerm2 状态栏、macOS 菜单栏、Shell 提示符或后台进程。
 
-## Supported providers
+## 支持情况
 
-- **Claude Code**: a graphical two-line HUD with model, project, 5-hour usage,
-  7-day usage, and reset times.
-- **Codex CLI**: a curated native footer with model, project, weekly usage, and
-  remaining context.
-- **Kimi CLI**: detects and preserves Kimi's built-in toolbar. Model, project,
-  and context stay visible there; quota remains available through `/usage`.
+| 工具 | 集成方式 | 常驻显示 | 按需查看 |
+| --- | --- | --- | --- |
+| Claude Code | 自定义状态栏命令 | 模型、目录、5 小时和 7 天额度 | — |
+| Codex CLI | 原生状态栏字段 | 模型、目录、周额度、上下文 | — |
+| Kimi CLI | 保留内置工具栏 | 模型、目录、Git、任务、上下文 | 配额（`/usage`） |
 
-Each integration is owned by its provider. Claude sessions only display Claude
-data, Codex sessions only display Codex data, and Kimi keeps using its own
-toolbar. No process detector is needed.
+每个集成只处理对应工具自己的数据，不检测进程，也不混用不同提供方的状态。
 
-## Preview
+## 显示效果
 
-Claude Code renders a full HUD because its `statusLine` API accepts an external
-command:
+Claude Code 支持外部状态栏命令，因此可以显示完整的双行 HUD：
 
 ```text
 Claude · Opus · ~/projects/example
 5h  ████████░░  76%  ↻ 14:30    7d  ██████░░░░  59%  ↻ Fri 09:00
 ```
 
-Before Claude returns the first response, rate-limit fields are not available:
+首次响应前还没有额度数据，此时会明确显示等待状态：
 
 ```text
 Claude · Opus · ~/projects/example
 5h  ░░░░░░░░░░  --    7d  ░░░░░░░░░░  --   waiting for first response
 ```
 
-Codex owns its renderer, so LLM HUD selects and orders native fields instead of
-drawing a custom progress bar:
+Codex CLI 由自身负责渲染，LLM HUD 只选择和排列原生字段：
 
 ```text
 gpt-5.6 xhigh · ~/projects/example · weekly 63% left · Context 98% left
 ```
 
-## Install
+## 安装
 
-One line, no checkout needed:
+需要 Python 3.11 或更高版本。
+
+当前项目处于开发阶段，下面的命令会从 GitHub `main` 分支安装：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/codermali/llm-hud/main/install.sh | sh
 ```
 
-Or from a checkout:
+也可以从本地源码目录安装：
 
 ```bash
 ./install.sh
 ```
 
-The installer copies the runtime to `~/.local/share/llm-hud`, writes a
-`~/.local/bin/llm-hud` launcher pinned to a detected Python 3.11+ interpreter,
-detects installed coding-agent CLIs, and configures only the detected
-providers. Restoration metadata is stored under `~/.config/llm-hud`.
+安装器默认执行以下操作：
 
-Python 3.11 or newer is required; the installer tries `python3.13`,
-`python3.12`, `python3.11`, then `python3`. Override the choice with
-`LLM_HUD_PYTHON=/path/to/python3.11`.
+- 将版本化运行时安装到 `~/.local/share/llm-hud`；
+- 在 `~/.local/bin/llm-hud` 创建固定使用已检测 Python 的启动器；
+- 检测 Claude Code、Codex CLI 和 Kimi CLI；
+- 只配置已检测到且需要配置的工具；
+- 将恢复配置所需的状态保存到 `~/.config/llm-hud`。
 
-## Commands
+Python 的检测顺序为 `python3.13`、`python3.12`、`python3.11`、`python3`。
+如需指定解释器：
+
+```bash
+LLM_HUD_PYTHON=/path/to/python3.11 ./install.sh
+```
+
+还可以使用以下环境变量：
+
+| 变量 | 用途 | 默认值 |
+| --- | --- | --- |
+| `LLM_HUD_INSTALL_DIR` | 运行时安装目录 | `~/.local/share/llm-hud` |
+| `LLM_HUD_BIN_DIR` | 命令安装目录 | `~/.local/bin` |
+| `LLM_HUD_TARBALL_URL` | 远程源码包地址 | GitHub `main` 分支压缩包 |
+
+## 更新与回退
+
+重新运行安装命令即可更新。安装器会先复制并验证新运行时，验证通过后再切换当前
+版本；安装失败时会继续使用更新前的版本。提供方配置不会因为运行时更新而被重置。
+
+需要回到上一个已安装版本时运行：
+
+```bash
+llm-hud rollback
+```
+
+`rollback` 只切换 LLM HUD 运行时，不修改 Claude Code 或 Codex CLI 的配置。
+
+> 正式发布前，远程安装入口仍需从 `main` 分支改为带校验值的 GitHub Release。
+> 因此当前的一行安装命令适合测试，不应视为固定版本安装。
+
+## 常用命令
 
 ```bash
 llm-hud providers
@@ -73,24 +99,26 @@ llm-hud install --provider claude
 llm-hud install --provider codex
 llm-hud doctor
 llm-hud uninstall
+llm-hud rollback
 ```
 
-Installation is idempotent. Uninstall restores the previous provider settings
-and refuses to overwrite a status configuration that the user changed later.
+- `install` 可重复执行，不会重复添加相同配置。
+- `doctor` 检查工具是否已安装、集成是否已配置，以及启动器是否可执行。
+- `uninstall` 恢复接入前的提供方状态栏配置；它不会删除 LLM HUD 运行时。
+- 如果用户在安装后自行修改了相关配置，卸载会拒绝覆盖这些修改。
 
-## Provider behavior
+## 各工具的行为
 
 ### Claude Code
 
-Claude passes status-line JSON to `llm-hud render claude`. LLM HUD reads the
-model, workspace, and current `rate_limits` windows from that payload. If a
-custom status line already exists, its output is retained above the HUD and its
-configuration is restored on uninstall.
+Claude Code 将状态栏 JSON 传给 `llm-hud render claude`。LLM HUD 从中读取模型、
+工作目录和当前 `rate_limits` 窗口。如果原来已有自定义状态栏，LLM HUD 会保留其
+输出，并在卸载时恢复原配置。
 
 ### Codex CLI
 
-Codex does not accept an external status-line renderer. LLM HUD configures these
-native `[tui].status_line` fields:
+Codex CLI 不使用外部状态栏渲染器。LLM HUD 配置以下原生
+`[tui].status_line` 字段：
 
 ```toml
 [tui]
@@ -102,57 +130,50 @@ status_line = [
 ]
 ```
 
-Codex controls rendering and refresh timing. Different active sessions can
-temporarily show different cached values until each session refreshes.
+显示样式和刷新时间由 Codex CLI 决定。项目级 `.codex/config.toml` 或命令行选择的
+profile 可能覆盖用户级配置，`doctor` 目前只检查用户级基础配置。
 
 ### Kimi CLI
 
-Kimi already renders model, workspace, Git state, background activity, and
-context usage in its bottom toolbar. It does not currently expose a supported
-external toolbar renderer, so LLM HUD does not patch Kimi's installation or
-read its credentials. Use `/usage` inside Kimi for quota progress and reset
-information.
+LLM HUD 当前保留 Kimi CLI 自带的底部工具栏。原因是外部状态栏命令不能获得内置栏
+展示的全部信息；强行接管会丢失 Git 状态、模式、目标或后台任务等内容。配额进度和
+重置时间继续通过 Kimi CLI 内的 `/usage` 查看。
 
-`llm-hud install` reports this provider as `builtin`; uninstall has nothing to
-restore because no Kimi settings are changed.
+安装时 Kimi 会显示为 `builtin`，不会修改其配置，因此卸载时也没有需要恢复的内容。
 
-## Integration levels
+## 项目结构
 
 ```text
-Provider  Integration  Persistent metrics             On demand
-Claude    command      model, cwd, quota               -
-Codex     native       model, cwd, weekly, context     -
-Kimi      builtin      model, cwd, context             quota (/usage)
-```
-
-## Project structure
-
-```text
+install.sh                    一键安装入口
+scripts/runtime_control.py    独立于当前版本的启动与回退控制
 src/llm_hud/
-├── cli.py            command-line interface
-├── hud.py            provider-neutral HUD model and renderer
-├── paths.py          config and state locations
-├── storage.py        atomic file and JSON operations
-├── toml_edit.py      conservative Codex TOML editing
+├── cli.py                    命令行入口
+├── hud.py                    通用 HUD 数据模型和渲染器
+├── installer.py              安装、更新和启动器管理
+├── runtime.py                版本化运行时与原子切换
+├── paths.py                  配置和状态路径
+├── storage.py                原子文件与 JSON 操作
+├── toml_edit.py              保守修改 Codex TOML 配置
 └── providers/
-    ├── base.py       provider contract
-    ├── claude.py     Claude adapter and installer
-    ├── codex.py      Codex native-footer adapter
-    └── kimi.py       Kimi built-in-toolbar adapter
+    ├── base.py               提供方接口
+    ├── claude.py             Claude Code 集成
+    ├── codex.py              Codex CLI 原生状态栏集成
+    └── kimi.py               Kimi CLI 内置工具栏集成
 ```
 
-A future provider such as Kimi implements the same `Provider` contract and maps
-its available data into the shared HUD model when custom rendering is supported.
+## 开发与测试
 
-## Development
-
-Development also requires Python 3.11+; on macOS the system `python3` may be
-older, so use an explicit interpreter:
+开发同样需要 Python 3.11 或更高版本。macOS 自带的 `python3` 可能较旧，建议明确
+指定可用版本：
 
 ```bash
 python3.12 -m unittest discover -s tests -t . -v
 python3.12 bin/llm-hud providers
 ```
 
-Tests use temporary HOME, settings, and state paths. They do not modify real
-Claude or Codex configuration.
+测试使用临时的 HOME、配置和状态路径，不会修改本机真实的 Claude Code 或 Codex CLI
+配置。
+
+## 许可证
+
+本项目使用 [MIT License](LICENSE)。
