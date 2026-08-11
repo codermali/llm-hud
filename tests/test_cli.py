@@ -7,7 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from llm_hud.cli import _version, build_parser
+from llm_hud.cli import _version, build_parser, command_doctor
+from llm_hud.providers.claude import ClaudeProvider
 from tests.support import Environment
 
 
@@ -53,6 +54,33 @@ class InstallCommandTests(unittest.TestCase):
                 with contextlib.redirect_stdout(buffer):
                     args.handler(args)
         self.assertIn("codex CLI was not detected", buffer.getvalue())
+
+
+class DoctorCommandTests(unittest.TestCase):
+    def test_missing_claude_launcher_is_unhealthy_and_uses_cli_override_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            claude_cli = stub_executable(
+                root, "claude-stub", "echo 'Claude Code 9.9.9'"
+            )
+            launcher = stub_executable(root, "llm-hud", "exit 0")
+            with Environment(
+                LLM_HUD_CLAUDE_BIN=str(claude_cli),
+                LLM_HUD_CODEX_BIN="",
+                LLM_HUD_KIMI_BIN="",
+                LLM_HUD_CLAUDE_SETTINGS=str(root / "settings.json"),
+                LLM_HUD_CODEX_CONFIG=str(root / "config.toml"),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                ClaudeProvider().install(str(launcher))
+                launcher.unlink()
+                buffer = io.StringIO()
+                with contextlib.redirect_stdout(buffer):
+                    result = command_doctor(None)  # type: ignore[arg-type]
+
+            self.assertEqual(result, 1)
+            self.assertIn("Claude Code 9.9.9", buffer.getvalue())
+            self.assertIn("launcher does not exist", buffer.getvalue())
 
 
 if __name__ == "__main__":

@@ -75,13 +75,14 @@ def _version(command: str) -> str:
 def command_doctor(_: argparse.Namespace) -> int:
     healthy = True
     for provider in providers():
-        available = provider.available()
+        executable = provider.executable()
+        available = executable is not None
         configured, detail = provider.configured()
         if provider.capabilities.integration == "builtin":
             state = "built in" if configured else "not available"
         else:
             state = "configured" if configured else "not configured"
-        installed = _version(provider.command) if available else "not installed"
+        installed = _version(executable) if executable is not None else "not installed"
         print(f"{provider.id}: {installed}; {state}; {detail}")
         if available and not configured:
             healthy = False

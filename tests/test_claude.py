@@ -9,11 +9,36 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from llm_hud.providers.claude import ClaudeProvider, render
+from llm_hud.providers.claude import ClaudeProvider, _is_llm_hud_command, render
 from tests.support import Environment
 
 
 class ClaudeProviderTests(unittest.TestCase):
+    def test_command_detection_requires_an_exact_renderer_argv(self):
+        accepted = (
+            "llm-hud render claude",
+            "/opt/tools/llm-hud render claude",
+            "'/path with spaces/llm-hud' render claude",
+        )
+        rejected = (
+            "not-llm-hud render claude",
+            "echo llm-hud render claude",
+            "llm-hud render claude --extra",
+            "llm-hud render claude2",
+            "'llm-hud render claude",
+        )
+        for command in accepted:
+            with self.subTest(command=command):
+                self.assertTrue(_is_llm_hud_command(command))
+        for command in rejected:
+            with self.subTest(command=command):
+                self.assertFalse(_is_llm_hud_command(command))
+
+        custom = "'/custom path/hud-launcher' render claude"
+        self.assertTrue(
+            _is_llm_hud_command(custom, installed_command=custom)
+        )
+
     def test_install_render_and_uninstall(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -95,6 +120,34 @@ class ClaudeProviderTests(unittest.TestCase):
                 restored = json.loads(settings.read_text())
                 self.assertEqual(restored["theme"], "dark")
                 self.assertEqual(restored["statusLine"]["command"], "printf existing")
+
+    def test_substring_lookalike_command_is_treated_as_user_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "settings.json"
+            lookalike = "printf 'llm-hud render claude'"
+            settings.write_text(
+                json.dumps(
+                    {"statusLine": {"type": "command", "command": lookalike}}
+                )
+            )
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = ClaudeProvider()
+                provider.install("/opt/llm-hud")
+                state = json.loads(
+                    (root / "state" / "providers" / "claude.json").read_text()
+                )
+                self.assertEqual(
+                    state["original_status_line"]["command"], lookalike
+                )
+                provider.uninstall()
+
+            self.assertEqual(
+                json.loads(settings.read_text())["statusLine"]["command"], lookalike
+            )
 
     def test_install_preserves_settings_file_permissions(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -414,6 +467,71 @@ class ClaudeProviderTests(unittest.TestCase):
             self.assertEqual(result.status, "error")
             self.assertIn("simulated settings failure", result.message)
             self.assertFalse((state_dir / "providers" / "claude.json").exists())
+
+    def test_configured_accepts_a_state_owned_custom_launcher_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher = root / "custom launcher"
+            launcher.write_text("#!/bin/sh\nexit 0\n")
+            os.chmod(launcher, 0o755)
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(root / "settings.json"),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = ClaudeProvider()
+                provider.install(str(launcher))
+                configured, detail = provider.configured()
+
+            self.assertTrue(configured, detail)
+            self.assertIn("executable", detail)
+
+    def test_configured_reports_a_missing_or_non_executable_launcher(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher = root / "llm-hud"
+            launcher.write_text("#!/bin/sh\nexit 0\n")
+            os.chmod(launcher, 0o755)
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(root / "settings.json"),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = ClaudeProvider()
+                provider.install(str(launcher))
+                os.chmod(launcher, 0o644)
+                configured, detail = provider.configured()
+                self.assertFalse(configured)
+                self.assertIn("not executable", detail)
+
+                launcher.unlink()
+                configured, detail = provider.configured()
+                self.assertFalse(configured)
+                self.assertIn("does not exist", detail)
+
+    def test_configured_requires_restoration_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher = root / "llm-hud"
+            launcher.write_text("#!/bin/sh\nexit 0\n")
+            os.chmod(launcher, 0o755)
+            settings = root / "settings.json"
+            settings.write_text(
+                json.dumps(
+                    {
+                        "statusLine": {
+                            "type": "command",
+                            "command": f"{launcher} render claude",
+                        }
+                    }
+                )
+            )
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                configured, detail = ClaudeProvider().configured()
+
+            self.assertFalse(configured)
+            self.assertIn("installation state is missing", detail)
 
 
 if __name__ == "__main__":

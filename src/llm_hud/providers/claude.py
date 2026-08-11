@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -24,8 +25,45 @@ from llm_hud.storage import (
 STATE_SCHEMAS = frozenset((1, 2))
 
 
-def _is_llm_hud_command(command: object) -> bool:
-    return isinstance(command, str) and "llm-hud" in command and "render claude" in command
+def _command_argv(command: object) -> tuple[str, str, str] | None:
+    if not isinstance(command, str):
+        return None
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return None
+    if len(argv) != 3 or argv[1:] != ["render", "claude"]:
+        return None
+    return argv[0], argv[1], argv[2]
+
+
+def _is_llm_hud_command(
+    command: object, *, installed_command: object = None
+) -> bool:
+    argv = _command_argv(command)
+    if argv is None:
+        return False
+    if isinstance(installed_command, str) and command == installed_command:
+        return True
+    return Path(argv[0]).name == "llm-hud"
+
+
+def _launcher_problem(command: object) -> str | None:
+    argv = _command_argv(command)
+    if argv is None:
+        return "statusLine command is not a valid LLM HUD renderer command"
+    executable = argv[0]
+    if os.sep not in executable and (os.altsep is None or os.altsep not in executable):
+        resolved = shutil.which(executable)
+        return None if resolved is not None else f"launcher is not on PATH: {executable}"
+    path = Path(executable).expanduser()
+    if not path.exists():
+        return f"launcher does not exist: {path}"
+    if not path.is_file():
+        return f"launcher is not a regular file: {path}"
+    if not os.access(path, os.X_OK):
+        return f"launcher is not executable: {path}"
+    return None
 
 
 def _load_settings(path: Path, *, target: Path | None = None) -> dict[str, Any]:
@@ -70,6 +108,8 @@ def _validate_installation_state(state: dict[str, Any]) -> None:
     installed = _installed_status_line_from_state(state)
     if installed is None:
         raise StateFileError("installation state is incomplete")
+    if _command_argv(state.get("installed_command")) is None:
+        raise StateFileError("installation state has an invalid installed_command")
     if state["schema"] == 2 and (
         installed.get("type") != "command"
         or installed.get("command") != state.get("installed_command")
@@ -308,7 +348,34 @@ class ClaudeProvider(Provider):
             return False, str(error)
         value = settings.get("statusLine")
         command = value.get("command") if isinstance(value, dict) else None
-        return _is_llm_hud_command(command), str(path)
+        try:
+            state = read_provider_state(
+                provider_state_path(self.id), supported_schemas=STATE_SCHEMAS
+            )
+            if state is not None:
+                validate_state_path(state, "settings_path", path)
+                _validate_installation_state(state)
+        except StateFileError as error:
+            return False, str(error)
+
+        installed_command = state.get("installed_command") if state is not None else None
+        if not _is_llm_hud_command(
+            command, installed_command=installed_command
+        ):
+            return False, f"LLM HUD statusLine command was not found in {path}"
+        if state is None:
+            return (
+                False,
+                f"LLM HUD command is present in {path}, but installation state is missing; "
+                "run llm-hud install to repair it",
+            )
+        installed = _installed_status_line_from_state(state)
+        if value != installed:
+            return False, f"statusLine changed after installation in {path}"
+        problem = _launcher_problem(command)
+        if problem is not None:
+            return False, f"{problem}; configured in {path}"
+        return True, f"{path}; launcher is executable"
 
     def render(self, raw: bytes, no_color: bool = False) -> str:
         return render(raw, color=False if no_color else None)

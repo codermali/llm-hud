@@ -191,4 +191,8 @@ class CodexProvider(Provider):
             _, items = _status_line(parsed)
         except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
             return False, str(error)
-        return items[: len(HUD_ITEMS)] == HUD_ITEMS, str(path)
+        detail = (
+            f"{path}; checked base user config only; project .codex/config.toml "
+            "and --profile layers may override it at runtime"
+        )
+        return items[: len(HUD_ITEMS)] == HUD_ITEMS, detail

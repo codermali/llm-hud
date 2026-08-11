@@ -26,11 +26,14 @@ class Provider:
     command: str
     capabilities: ProviderCapabilities
 
-    def available(self) -> bool:
+    def executable(self) -> str | None:
         override = os.environ.get(f"LLM_HUD_{self.id.upper()}_BIN")
         if override is not None:
-            return bool(override)
-        return shutil.which(self.command) is not None
+            return override or None
+        return shutil.which(self.command)
+
+    def available(self) -> bool:
+        return self.executable() is not None
 
     def install(self, command_path: str) -> Result:
         raise NotImplementedError

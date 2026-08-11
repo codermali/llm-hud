@@ -285,6 +285,21 @@ class CodexProviderTests(unittest.TestCase):
             self.assertTrue(config.is_symlink())
             self.assertEqual(target.read_text(), original)
 
+    def test_configured_discloses_unchecked_runtime_config_layers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            config.write_text(
+                set_array("", "tui", "status_line", HUD_ITEMS)
+            )
+            with Environment(LLM_HUD_CODEX_CONFIG=str(config)):
+                configured, detail = CodexProvider().configured()
+
+            self.assertTrue(configured)
+            self.assertIn("base user config", detail)
+            self.assertIn(".codex/config.toml", detail)
+            self.assertIn("--profile", detail)
+
 
 if __name__ == "__main__":
     unittest.main()
