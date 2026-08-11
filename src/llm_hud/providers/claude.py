@@ -27,6 +27,27 @@ def _load_settings(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _configured_status_line(value: object, command: str) -> dict[str, Any]:
+    configured = dict(value) if isinstance(value, dict) else {}
+    configured.update({"type": "command", "command": command})
+    configured.pop("refreshInterval", None)
+    return configured
+
+
+def _installed_status_line_from_state(state: object) -> dict[str, Any] | None:
+    if not isinstance(state, dict):
+        return None
+    command = state.get("installed_command")
+    if not isinstance(command, str) or not command:
+        return None
+    installed = state.get("installed_status_line")
+    if state.get("schema") == 2:
+        return dict(installed) if isinstance(installed, dict) else None
+    # Schema 1 did not store the complete installed value, but it can be
+    # reconstructed deterministically from the saved original and command.
+    return _configured_status_line(state.get("original_status_line"), command)
+
+
 def _remaining(window: object) -> float | None:
     if not isinstance(window, dict):
         return None
@@ -137,6 +158,19 @@ class ClaudeProvider(Provider):
         current_command = current.get("command") if isinstance(current, dict) else None
 
         if isinstance(existing_state, dict) and existing_state.get("installed_command"):
+            previous_installed = _installed_status_line_from_state(existing_state)
+            if previous_installed is None:
+                return Result(
+                    self.id,
+                    "error",
+                    "installation state is incomplete; left statusLine untouched",
+                )
+            if current != previous_installed:
+                return Result(
+                    self.id,
+                    "skipped",
+                    "statusLine changed after installation; left it untouched",
+                )
             original_present = bool(existing_state.get("original_present"))
             original_status_line = existing_state.get("original_status_line")
         elif _is_llm_hud_command(current_command):
@@ -146,16 +180,15 @@ class ClaudeProvider(Provider):
             original_present = "statusLine" in settings
             original_status_line = current
 
-        configured = dict(current) if isinstance(current, dict) else {}
-        configured.update({"type": "command", "command": installed_command})
-        configured.pop("refreshInterval", None)
+        configured = _configured_status_line(current, installed_command)
 
         state = {
-            "schema": 1,
+            "schema": 2,
             "settings_path": str(settings_path),
             "original_present": original_present,
             "original_status_line": original_status_line,
             "installed_command": installed_command,
+            "installed_status_line": configured,
         }
         try:
             atomic_write_json(state_path, state)
@@ -177,8 +210,14 @@ class ClaudeProvider(Provider):
             return Result(self.id, "error", str(error))
 
         current = settings.get("statusLine")
-        current_command = current.get("command") if isinstance(current, dict) else None
-        if current_command != state.get("installed_command"):
+        installed = _installed_status_line_from_state(state)
+        if installed is None:
+            return Result(
+                self.id,
+                "error",
+                "installation state is incomplete; left statusLine untouched",
+            )
+        if current != installed:
             return Result(
                 self.id,
                 "skipped",

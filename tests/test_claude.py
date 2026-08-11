@@ -32,6 +32,14 @@ class ClaudeProviderTests(unittest.TestCase):
                     "/opt/llm-hud render claude",
                 )
                 self.assertNotIn("refreshInterval", configured["statusLine"])
+                installation_state = json.loads(
+                    (state / "providers" / "claude.json").read_text()
+                )
+                self.assertEqual(installation_state["schema"], 2)
+                self.assertEqual(
+                    installation_state["installed_status_line"],
+                    configured["statusLine"],
+                )
 
                 raw = json.dumps(
                     {
@@ -147,6 +155,73 @@ class ClaudeProviderTests(unittest.TestCase):
                     json.loads(settings.read_text())["statusLine"]["command"],
                     "my-new-footer",
                 )
+
+    def test_uninstall_does_not_replace_a_later_non_command_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "settings.json"
+            settings.write_text(
+                json.dumps(
+                    {
+                        "statusLine": {
+                            "type": "command",
+                            "command": "printf prior",
+                            "padding": 2,
+                        }
+                    }
+                )
+            )
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = ClaudeProvider()
+                provider.install("/opt/llm-hud")
+                payload = json.loads(settings.read_text())
+                payload["statusLine"]["padding"] = 9
+                settings.write_text(json.dumps(payload))
+
+                reinstall = provider.install("/opt/llm-hud")
+                result = provider.uninstall()
+
+            self.assertEqual(reinstall.status, "skipped")
+            self.assertEqual(result.status, "skipped")
+            self.assertEqual(json.loads(settings.read_text())["statusLine"]["padding"], 9)
+
+    def test_schema_one_state_is_safely_reconstructed_on_uninstall(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "settings.json"
+            settings.write_text(
+                json.dumps(
+                    {
+                        "statusLine": {
+                            "type": "command",
+                            "command": "printf prior",
+                            "padding": 2,
+                        }
+                    }
+                )
+            )
+            state_dir = root / "state"
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(state_dir),
+            ):
+                provider = ClaudeProvider()
+                provider.install("/opt/llm-hud")
+                state_path = state_dir / "providers" / "claude.json"
+                state = json.loads(state_path.read_text())
+                state["schema"] = 1
+                state.pop("installed_status_line")
+                state_path.write_text(json.dumps(state))
+
+                result = provider.uninstall()
+
+            self.assertEqual(result.status, "uninstalled")
+            restored = json.loads(settings.read_text())
+            self.assertEqual(restored["statusLine"]["command"], "printf prior")
+            self.assertEqual(restored["statusLine"]["padding"], 2)
 
 
 if __name__ == "__main__":
