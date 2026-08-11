@@ -12,6 +12,23 @@ class StateFileError(ValueError):
     """An installation state file is present but unsafe to use."""
 
 
+def fsync_directory(path: Path) -> None:
+    """Persist a rename when the platform supports directory fsync."""
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        # Some filesystems do not implement directory fsync. The file itself
+        # was already synced before rename, so retain the portable fallback.
+        pass
+    finally:
+        os.close(descriptor)
+
+
 def resolve_file_target(path: Path, *, follow_symlinks: bool = True) -> Path:
     """Resolve an atomic-write target while enforcing its symlink policy."""
     try:
@@ -171,6 +188,7 @@ def atomic_write_text(
             if final_metadata is not None and not stat.S_ISREG(final_metadata.st_mode):
                 raise OSError(f"managed state target is not a regular file: {path}")
         os.replace(temp_path, target)
+        fsync_directory(target.parent)
     finally:
         try:
             temp_path.unlink()

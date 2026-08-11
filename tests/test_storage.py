@@ -5,6 +5,7 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from llm_hud.storage import (
     StateFileError,
@@ -26,6 +27,13 @@ class AtomicWriteTests(unittest.TestCase):
             os.chmod(path, 0o644)
             atomic_write_text(path, "{}\n")
             self.assertEqual(file_mode(path), 0o644)
+
+    def test_atomic_rename_requests_a_parent_directory_sync(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            with mock.patch("llm_hud.storage.fsync_directory") as sync_directory:
+                atomic_write_text(path, "{}\n")
+            sync_directory.assert_called_once_with(path.parent.resolve())
 
     def test_json_mode_none_preserves_existing_mode(self):
         with tempfile.TemporaryDirectory() as directory:
