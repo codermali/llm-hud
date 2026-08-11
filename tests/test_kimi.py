@@ -16,7 +16,12 @@ class KimiProviderTests(unittest.TestCase):
             self.assertEqual(result.status, "builtin")
             self.assertTrue(configured)
             self.assertIn("built-in toolbar", detail)
+            self.assertIn("external status snapshot", detail)
+            self.assertIn("goal, tasks, tips", detail)
+            self.assertIn("/usage", detail)
+            self.assertEqual(result.message, detail)
             self.assertEqual(provider.capabilities.integration, "builtin")
+            self.assertFalse(provider.capabilities.custom_renderer)
             self.assertEqual(provider.capabilities.on_demand_metrics, ("quota",))
             self.assertEqual(provider.uninstall().status, "skipped")
 

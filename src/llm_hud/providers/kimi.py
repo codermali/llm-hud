@@ -3,6 +3,12 @@ from __future__ import annotations
 from llm_hud.providers.base import Provider, ProviderCapabilities, Result
 
 
+BUILTIN_DETAIL = (
+    "keeps Kimi's richer built-in toolbar because the external status snapshot "
+    "omits native goal, tasks, tips, and account quota; use /usage for quota"
+)
+
+
 class KimiProvider(Provider):
     id = "kimi"
     command = "kimi"
@@ -20,7 +26,7 @@ class KimiProvider(Provider):
         return Result(
             self.id,
             "builtin",
-            "uses Kimi's built-in toolbar; quota remains available through /usage",
+            BUILTIN_DETAIL,
         )
 
     def uninstall(self) -> Result:
@@ -29,4 +35,4 @@ class KimiProvider(Provider):
     def configured(self) -> tuple[bool, str]:
         if not self.available():
             return False, "kimi command was not detected"
-        return True, "built-in toolbar; quota is available on demand through /usage"
+        return True, BUILTIN_DETAIL
