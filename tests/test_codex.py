@@ -76,6 +76,91 @@ class CodexProviderTests(unittest.TestCase):
                 provider.uninstall()
                 self.assertEqual(status_line(config), ["current-dir", "git-branch"])
 
+    def test_reinstall_keeps_later_items_out_of_the_managed_set(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            config.write_text('[tui]\nstatus_line = ["current-dir"]\n')
+            state_dir = root / "state"
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(state_dir),
+            ):
+                provider = CodexProvider()
+                provider.install("ignored")
+                config.write_text(
+                    set_array(
+                        config.read_text(),
+                        "tui",
+                        "status_line",
+                        [*status_line(config), "git-branch"],
+                    )
+                )
+
+                self.assertEqual(provider.install("ignored").status, "installed")
+                state = json.loads(
+                    (state_dir / "providers" / "codex.json").read_text()
+                )
+                self.assertEqual(
+                    state["original_items"], ["current-dir", "git-branch"]
+                )
+                self.assertEqual(provider.uninstall().status, "uninstalled")
+
+            self.assertEqual(status_line(config), ["current-dir", "git-branch"])
+
+    def test_reinstall_preserves_later_items_when_status_line_was_originally_absent(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            config.write_text("[tui]\nnotifications = true\n")
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = CodexProvider()
+                provider.install("ignored")
+                config.write_text(
+                    set_array(
+                        config.read_text(),
+                        "tui",
+                        "status_line",
+                        [*status_line(config), "git-branch"],
+                    )
+                )
+                provider.install("ignored")
+                provider.uninstall()
+
+            self.assertEqual(status_line(config), ["git-branch"])
+
+    def test_reinstall_does_not_readd_a_managed_item_removed_later(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            config.write_text('[tui]\nstatus_line = ["current-dir"]\n')
+            state_dir = root / "state"
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(state_dir),
+            ):
+                provider = CodexProvider()
+                provider.install("ignored")
+                changed = [
+                    item for item in status_line(config) if item != "weekly-limit"
+                ]
+                config.write_text(
+                    set_array(config.read_text(), "tui", "status_line", changed)
+                )
+                state_path = state_dir / "providers" / "codex.json"
+                state_before = state_path.read_bytes()
+
+                result = provider.install("ignored")
+
+            self.assertEqual(result.status, "skipped")
+            self.assertEqual(status_line(config), changed)
+            self.assertEqual(state_path.read_bytes(), state_before)
+
     def test_unwritable_table_reports_error_without_touching_the_file(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

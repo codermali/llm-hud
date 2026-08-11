@@ -103,14 +103,21 @@ class CodexProvider(Provider):
                 _validate_installation_state(existing_state)
         except StateFileError as error:
             return Result(self.id, "error", str(error))
-        if existing_state is not None and existing_state.get("installed_items"):
+        if existing_state is not None:
+            restored = _restore_items(current, existing_state)
+            if restored is None:
+                return Result(
+                    self.id,
+                    "skipped",
+                    "status_line changed after installation; left it untouched",
+                )
             original_present = bool(existing_state.get("original_present"))
-            original_items = existing_state.get("original_items", [])
+            original_items = restored
         else:
             original_present = current_present
             original_items = current
 
-        installed = _with_hud(current)
+        installed = _with_hud(original_items)
         state = {
             "schema": 1,
             "config_path": str(config_target),
