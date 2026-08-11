@@ -59,7 +59,8 @@ jobs:
         run: |
           launcher="$RUNNER_TEMP/bin/llm-hud"
           test ! -L "$launcher"
-          grep -qE "^exec '/.*' '/.*' \"\\\$@\"$" "$launcher"
+          grep -qx '# llm-hud-managed-launcher-v1' "$launcher"
+          grep -qE '^exec /.+ -I -B /.+ "\$@"$' "$launcher"
           mkdir -p "$RUNNER_TEMP/empty"
           PATH="$RUNNER_TEMP/empty" "$launcher" --version
       - name: doctor and uninstall
