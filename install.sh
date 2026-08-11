@@ -9,6 +9,18 @@ set -eu
 repo_tarball=${LLM_HUD_TARBALL_URL:-"https://github.com/codermali/llm-hud/archive/refs/heads/main.tar.gz"}
 install_root=${LLM_HUD_INSTALL_DIR:-"$HOME/.local/share/llm-hud"}
 bin_dir=${LLM_HUD_BIN_DIR:-"$HOME/.local/bin"}
+install_marker_name=.llm-hud-install-root
+install_marker_value=llm-hud-install-root-v1
+
+directory_is_empty() {
+  set -- "$1"/* "$1"/.[!.]* "$1"/..?*
+  for entry do
+    if [ -e "$entry" ] || [ -L "$entry" ]; then
+      return 1
+    fi
+  done
+  return 0
+}
 
 sh_quote() {
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
@@ -49,7 +61,8 @@ fi
 # Locate the source tree: the directory containing this script when run from a
 # checkout, otherwise a fresh download of the repository tarball.
 cleanup_dir=""
-trap '[ -n "$cleanup_dir" ] && rm -rf "$cleanup_dir"' EXIT
+marker_tmp=""
+trap '[ -n "$marker_tmp" ] && rm -f "$marker_tmp"; [ -n "$cleanup_dir" ] && rm -rf "$cleanup_dir"' EXIT
 # $0 is not a readable file when the script arrives on stdin (curl | sh); only
 # then does dirname "$0" point at the caller's cwd rather than a checkout.
 script_dir=""
@@ -88,6 +101,55 @@ mkdir -p "$install_root"
 install_root=$(CDPATH= cd -- "$install_root" && pwd -P)
 
 if [ "$source_root" != "$install_root" ]; then
+  # Only remove runtime directories from a location that this installer owns.
+  # Existing 0.1.0 installations predate the marker, so recognize their full
+  # runtime shape once and adopt them without breaking upgrades.
+  home_root=$(CDPATH= cd -- "$HOME" 2>/dev/null && pwd -P) || home_root=""
+  home_local_root=$(CDPATH= cd -- "$HOME/.local" 2>/dev/null && pwd -P) || home_local_root=""
+  home_local_share_root=$(CDPATH= cd -- "$HOME/.local/share" 2>/dev/null && pwd -P) || home_local_share_root=""
+  home_local_bin_root=$(CDPATH= cd -- "$HOME/.local/bin" 2>/dev/null && pwd -P) || home_local_bin_root=""
+  case "$install_root" in
+    /|//|"$home_root"|"$home_local_root"|"$home_local_share_root"|"$home_local_bin_root")
+      printf '%s\n' "Refusing unsafe LLM_HUD_INSTALL_DIR: $install_root" >&2
+      printf '%s\n' "Choose a dedicated directory such as $HOME/.local/share/llm-hud." >&2
+      exit 1
+      ;;
+  esac
+
+  legacy_default_root=""
+  if [ -d "$HOME/.local/share/llm-hud" ]; then
+    legacy_default_root=$(CDPATH= cd -- "$HOME/.local/share/llm-hud" 2>/dev/null && pwd -P) || legacy_default_root=""
+  fi
+  install_marker="$install_root/$install_marker_name"
+  if [ -f "$install_marker" ]; then
+    marker_value=$(sed -n '1p' "$install_marker" 2>/dev/null || true)
+    if [ "$marker_value" != "$install_marker_value" ]; then
+      printf '%s\n' "Refusing unrecognized install marker: $install_marker" >&2
+      exit 1
+    fi
+  elif [ "$install_root" = "$legacy_default_root" ] &&
+    [ ! -e "$install_root/install.sh" ] &&
+    [ ! -d "$install_root/.git" ] &&
+    [ ! -d "$install_root/tests" ] &&
+    [ -f "$install_root/src/llm_hud/cli.py" ] &&
+    [ -f "$install_root/bin/llm-hud" ] &&
+    [ -f "$install_root/README.md" ] &&
+    [ -f "$install_root/LICENSE" ] &&
+    [ -f "$install_root/pyproject.toml" ]; then
+    : # Adopt an unmarked installation created by llm-hud 0.1.0.
+  elif ! directory_is_empty "$install_root"; then
+    printf '%s\n' "Refusing non-empty unmanaged install directory: $install_root" >&2
+    printf '%s\n' "Choose an empty directory dedicated to llm-hud." >&2
+    exit 1
+  fi
+
+  # Claim the validated directory before replacing anything. If a later copy
+  # fails, the next run can safely repair the partial managed installation.
+  marker_tmp="$install_root/${install_marker_name}.tmp.$$"
+  printf '%s\n' "$install_marker_value" >"$marker_tmp"
+  mv -f "$marker_tmp" "$install_marker"
+  marker_tmp=""
+
   rm -rf "$install_root/src" "$install_root/bin"
   cp -R "$source_root/src" "$install_root/src"
   cp -R "$source_root/bin" "$install_root/bin"
