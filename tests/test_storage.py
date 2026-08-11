@@ -41,6 +41,91 @@ class AtomicWriteTests(unittest.TestCase):
             atomic_write_json(path, {"a": 1})
             self.assertEqual(file_mode(path), 0o600)
 
+    def test_text_follows_relative_symlink_without_replacing_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "managed" / "settings.json"
+            target.parent.mkdir()
+            target.write_text("old")
+            os.chmod(target, 0o640)
+            link = root / "settings.json"
+            link.symlink_to(Path("managed") / "settings.json")
+            original_link = link.readlink()
+
+            atomic_write_text(link, "new")
+
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(link.readlink(), original_link)
+            self.assertEqual(target.read_text(), "new")
+            self.assertEqual(file_mode(target), 0o640)
+
+    def test_text_follows_a_symlink_chain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target"
+            target.write_text("old")
+            middle = root / "middle"
+            middle.symlink_to("target")
+            link = root / "link"
+            link.symlink_to("middle")
+
+            atomic_write_text(link, "new")
+
+            self.assertTrue(link.is_symlink())
+            self.assertTrue(middle.is_symlink())
+            self.assertEqual(target.read_text(), "new")
+
+    def test_dangling_symlink_is_rejected_without_replacing_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            link = root / "settings.json"
+            link.symlink_to("missing.json")
+
+            with self.assertRaisesRegex(OSError, "cannot resolve symlink"):
+                atomic_write_text(link, "new")
+
+            self.assertTrue(link.is_symlink())
+            self.assertFalse((root / "missing.json").exists())
+
+    def test_changed_symlink_target_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first"
+            first.write_text("first")
+            second = root / "second"
+            second.write_text("second")
+            link = root / "link"
+            link.symlink_to("second")
+
+            with self.assertRaisesRegex(OSError, "file target changed"):
+                atomic_write_text(link, "new", expected_target=first.resolve())
+
+            self.assertEqual(first.read_text(), "first")
+            self.assertEqual(second.read_text(), "second")
+
+    def test_non_regular_target_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            directory_target = root / "target"
+            directory_target.mkdir()
+            link = root / "link"
+            link.symlink_to("target")
+
+            with self.assertRaisesRegex(OSError, "not a regular file"):
+                atomic_write_text(link, "new")
+
+            self.assertTrue(link.is_symlink())
+
+    def test_zero_mode_is_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "private"
+            path.write_text("old")
+            os.chmod(path, 0o000)
+
+            atomic_write_text(path, "new")
+
+            self.assertEqual(file_mode(path), 0o000)
+
 
 class ProviderStateTests(unittest.TestCase):
     def test_missing_state_is_distinct_from_invalid_state(self):
@@ -62,6 +147,24 @@ class ProviderStateTests(unittest.TestCase):
             path.write_text('{"schema": 3}')
             with self.assertRaisesRegex(StateFileError, "newer than supported"):
                 read_provider_state(path, supported_schemas=frozenset((1, 2)))
+
+    def test_state_symlink_is_never_followed_for_reads_or_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            external = root / "external.json"
+            external.write_text('{"schema": 1}\n')
+            state = root / "state.json"
+            state.symlink_to("external.json")
+
+            with self.assertRaisesRegex(StateFileError, "symlink"):
+                read_provider_state(state, supported_schemas=frozenset((1,)))
+            with self.assertRaisesRegex(OSError, "symlink"):
+                atomic_write_json(
+                    state, {"schema": 1, "changed": True}, follow_symlinks=False
+                )
+
+            self.assertTrue(state.is_symlink())
+            self.assertEqual(external.read_text(), '{"schema": 1}\n')
 
 
 if __name__ == "__main__":

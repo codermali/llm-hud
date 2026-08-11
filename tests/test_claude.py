@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from llm_hud.providers.claude import ClaudeProvider, render
 from tests.support import Environment
@@ -325,6 +326,94 @@ class ClaudeProviderTests(unittest.TestCase):
                 output = render(b'{"model":{"display_name":"Opus"}}', color=False)
 
             self.assertTrue(output.startswith("Claude · Opus\n"))
+
+    def test_install_and_uninstall_preserve_a_relative_settings_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "dotfiles" / "claude.json"
+            target.parent.mkdir()
+            original = {"theme": "dark"}
+            target.write_text(json.dumps(original))
+            os.chmod(target, 0o640)
+            settings = root / "settings.json"
+            settings.symlink_to(Path("dotfiles") / "claude.json")
+            state_dir = root / "state"
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(state_dir),
+            ):
+                provider = ClaudeProvider()
+                self.assertEqual(provider.install("/opt/llm-hud").status, "installed")
+                self.assertTrue(settings.is_symlink())
+                self.assertIn("statusLine", json.loads(target.read_text()))
+                state = json.loads(
+                    (state_dir / "providers" / "claude.json").read_text()
+                )
+                self.assertEqual(state["settings_path"], str(target.resolve()))
+                self.assertEqual(provider.uninstall().status, "uninstalled")
+
+            self.assertTrue(settings.is_symlink())
+            self.assertEqual(json.loads(target.read_text()), original)
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o640)
+
+    def test_retargeted_settings_symlink_is_not_restored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.json"
+            first.write_text("{}")
+            settings = root / "settings.json"
+            settings.symlink_to("first.json")
+            state_dir = root / "state"
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(state_dir),
+            ):
+                provider = ClaudeProvider()
+                provider.install("/opt/llm-hud")
+                second = root / "second.json"
+                second.write_text(first.read_text())
+                settings.unlink()
+                settings.symlink_to("second.json")
+                before = second.read_text()
+                result = provider.uninstall()
+
+            self.assertEqual(result.status, "error")
+            self.assertIn("not current path", result.message)
+            self.assertEqual(second.read_text(), before)
+
+    def test_dangling_settings_symlink_does_not_create_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "settings.json"
+            settings.symlink_to("missing.json")
+            state_dir = root / "state"
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(state_dir),
+            ):
+                result = ClaudeProvider().install("/opt/llm-hud")
+
+            self.assertEqual(result.status, "error")
+            self.assertTrue(settings.is_symlink())
+            self.assertFalse((state_dir / "providers" / "claude.json").exists())
+
+    def test_failed_settings_write_rolls_back_new_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_dir = root / "state"
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(root / "settings.json"),
+                LLM_HUD_STATE_DIR=str(state_dir),
+            ):
+                with mock.patch(
+                    "llm_hud.providers.claude.atomic_write_json",
+                    side_effect=OSError("simulated settings failure"),
+                ):
+                    result = ClaudeProvider().install("/opt/llm-hud")
+
+            self.assertEqual(result.status, "error")
+            self.assertIn("simulated settings failure", result.message)
+            self.assertFalse((state_dir / "providers" / "claude.json").exists())
 
 
 if __name__ == "__main__":

@@ -7,9 +7,11 @@ from llm_hud.paths import codex_config_path, provider_state_path
 from llm_hud.providers.base import Provider, ProviderCapabilities, Result
 from llm_hud.storage import (
     StateFileError,
-    atomic_write_json,
+    atomic_write_provider_state,
     atomic_write_text,
     read_provider_state,
+    resolve_file_target,
+    restore_provider_state,
     validate_state_path,
 )
 from llm_hud.toml_edit import remove_key, set_array
@@ -25,10 +27,11 @@ OBSOLETE_ITEMS = ["five-hour-limit"]
 STATE_SCHEMAS = frozenset((1,))
 
 
-def _load_config() -> tuple[str, dict[str, Any]]:
+def _load_config(*, target: Path | None = None) -> tuple[str, dict[str, Any]]:
     path = codex_config_path()
+    target = target or resolve_file_target(path)
     try:
-        text = path.read_text(encoding="utf-8")
+        text = target.read_text(encoding="utf-8")
     except FileNotFoundError:
         text = ""
     return text, tomllib.loads(text)
@@ -85,7 +88,8 @@ class CodexProvider(Provider):
         path = codex_config_path()
         state_path = provider_state_path(self.id)
         try:
-            text, parsed = _load_config()
+            config_target = resolve_file_target(path)
+            text, parsed = _load_config(target=config_target)
             current_present, current = _status_line(parsed)
         except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
             return Result(self.id, "error", f"cannot read {path}: {error}")
@@ -109,16 +113,28 @@ class CodexProvider(Provider):
         installed = _with_hud(current)
         state = {
             "schema": 1,
-            "config_path": str(path),
+            "config_path": str(config_target),
             "original_present": original_present,
             "original_items": original_items,
             "installed_items": installed,
         }
+        state_written = False
         try:
             updated = set_array(text, "tui", "status_line", installed)
-            atomic_write_json(state_path, state)
-            atomic_write_text(path, updated)
+            atomic_write_provider_state(state_path, state)
+            state_written = True
+            atomic_write_text(path, updated, expected_target=config_target)
         except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
+            if state_written:
+                try:
+                    restore_provider_state(state_path, existing_state)
+                except OSError as rollback_error:
+                    return Result(
+                        self.id,
+                        "error",
+                        f"{error}; also failed to restore installation state: "
+                        f"{rollback_error}",
+                    )
             return Result(self.id, "error", str(error))
         return Result(self.id, "installed", f"configured {path}")
 
@@ -128,14 +144,14 @@ class CodexProvider(Provider):
         try:
             state = read_provider_state(state_path, supported_schemas=STATE_SCHEMAS)
             if state is not None:
-                validate_state_path(state, "config_path", path)
+                config_target = validate_state_path(state, "config_path", path)
                 _validate_installation_state(state)
         except StateFileError as error:
             return Result(self.id, "error", str(error))
         if state is None:
             return Result(self.id, "skipped", "no installation state")
         try:
-            text, parsed = _load_config()
+            text, parsed = _load_config(target=config_target)
             present, current = _status_line(parsed)
         except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
             return Result(self.id, "error", f"cannot read {path}: {error}")
@@ -155,7 +171,7 @@ class CodexProvider(Provider):
                 updated = remove_key(text, "tui", "status_line")
             else:
                 updated = set_array(text, "tui", "status_line", restored)
-            atomic_write_text(path, updated)
+            atomic_write_text(path, updated, expected_target=config_target)
             state_path.unlink(missing_ok=True)
         except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
             return Result(self.id, "error", str(error))

@@ -13,7 +13,10 @@ from llm_hud.providers.base import Provider, ProviderCapabilities, Result
 from llm_hud.storage import (
     StateFileError,
     atomic_write_json,
+    atomic_write_provider_state,
     read_provider_state,
+    resolve_file_target,
+    restore_provider_state,
     validate_state_path,
 )
 
@@ -25,10 +28,11 @@ def _is_llm_hud_command(command: object) -> bool:
     return isinstance(command, str) and "llm-hud" in command and "render claude" in command
 
 
-def _load_settings(path: Path) -> dict[str, Any]:
-    if not path.exists():
+def _load_settings(path: Path, *, target: Path | None = None) -> dict[str, Any]:
+    target = target or resolve_file_target(path)
+    if not target.exists():
         return {}
-    with path.open("r", encoding="utf-8") as handle:
+    with target.open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
     if not isinstance(payload, dict):
         raise ValueError(f"Claude settings must be a JSON object: {path}")
@@ -181,7 +185,8 @@ class ClaudeProvider(Provider):
         settings_path = claude_settings_path()
         state_path = provider_state_path(self.id)
         try:
-            settings = _load_settings(settings_path)
+            settings_target = resolve_file_target(settings_path)
+            settings = _load_settings(settings_path, target=settings_target)
         except (OSError, json.JSONDecodeError, ValueError) as error:
             return Result(self.id, "error", str(error))
 
@@ -220,17 +225,34 @@ class ClaudeProvider(Provider):
 
         state = {
             "schema": 2,
-            "settings_path": str(settings_path),
+            "settings_path": str(settings_target),
             "original_present": original_present,
             "original_status_line": original_status_line,
             "installed_command": installed_command,
             "installed_status_line": configured,
         }
+        state_written = False
         try:
-            atomic_write_json(state_path, state)
+            atomic_write_provider_state(state_path, state)
+            state_written = True
             settings["statusLine"] = configured
-            atomic_write_json(settings_path, settings, mode=None)
+            atomic_write_json(
+                settings_path,
+                settings,
+                mode=None,
+                expected_target=settings_target,
+            )
         except OSError as error:
+            if state_written:
+                try:
+                    restore_provider_state(state_path, existing_state)
+                except OSError as rollback_error:
+                    return Result(
+                        self.id,
+                        "error",
+                        f"{error}; also failed to restore installation state: "
+                        f"{rollback_error}",
+                    )
             return Result(self.id, "error", str(error))
         return Result(self.id, "installed", f"configured {settings_path}")
 
@@ -240,14 +262,16 @@ class ClaudeProvider(Provider):
         try:
             state = read_provider_state(state_path, supported_schemas=STATE_SCHEMAS)
             if state is not None:
-                validate_state_path(state, "settings_path", settings_path)
+                settings_target = validate_state_path(
+                    state, "settings_path", settings_path
+                )
                 _validate_installation_state(state)
         except StateFileError as error:
             return Result(self.id, "error", str(error))
         if state is None:
             return Result(self.id, "skipped", "no installation state")
         try:
-            settings = _load_settings(settings_path)
+            settings = _load_settings(settings_path, target=settings_target)
         except (OSError, json.JSONDecodeError, ValueError) as error:
             return Result(self.id, "error", str(error))
 
@@ -265,7 +289,12 @@ class ClaudeProvider(Provider):
         else:
             settings.pop("statusLine", None)
         try:
-            atomic_write_json(settings_path, settings, mode=None)
+            atomic_write_json(
+                settings_path,
+                settings,
+                mode=None,
+                expected_target=settings_target,
+            )
             state_path.unlink(missing_ok=True)
         except OSError as error:
             return Result(self.id, "error", str(error))

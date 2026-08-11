@@ -173,6 +173,33 @@ class CodexProviderTests(unittest.TestCase):
             self.assertIn("not current path", result.message)
             self.assertFalse(second.exists())
 
+    def test_install_and_uninstall_preserve_a_relative_config_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "dotfiles" / "codex.toml"
+            target.parent.mkdir()
+            original = '[tui]\nnotifications = true\n'
+            target.write_text(original)
+            config = root / "config.toml"
+            config.symlink_to(Path("dotfiles") / "codex.toml")
+            state_dir = root / "state"
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(state_dir),
+            ):
+                provider = CodexProvider()
+                self.assertEqual(provider.install("ignored").status, "installed")
+                self.assertTrue(config.is_symlink())
+                self.assertEqual(status_line(target), HUD_ITEMS)
+                state = json.loads(
+                    (state_dir / "providers" / "codex.json").read_text()
+                )
+                self.assertEqual(state["config_path"], str(target.resolve()))
+                self.assertEqual(provider.uninstall().status, "uninstalled")
+
+            self.assertTrue(config.is_symlink())
+            self.assertEqual(target.read_text(), original)
+
 
 if __name__ == "__main__":
     unittest.main()
