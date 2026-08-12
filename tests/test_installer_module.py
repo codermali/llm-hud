@@ -1241,6 +1241,136 @@ class RuntimeInstallerTests(unittest.TestCase):
             self.assertEqual((root / "activation").read_bytes(), activation_bytes)
             self.assertEqual(len(list((root / "versions").iterdir())), 1)
 
+    def test_same_release_reinstall_repairs_a_corrupt_active_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            owned_root(root)
+            first, activation = install_runtime_from_source(ROOT, root)
+            activation_before = (root / "activation").read_bytes()
+            installed = runtime_path(root, first.release_id)
+            (installed / "README.md").write_text("corrupt active runtime\n")
+
+            repaired, repaired_activation = install_runtime_from_source(ROOT, root)
+
+            self.assertEqual(repaired, first)
+            self.assertEqual(repaired_activation, activation)
+            self.assertEqual((root / "activation").read_bytes(), activation_before)
+            self.assertEqual(validate_runtime(root, first.release_id), first)
+
+    def test_same_release_reinstall_repairs_a_corrupt_inactive_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "runtime"
+            second_source = base / "second-source"
+            root.mkdir()
+            second_source.mkdir()
+            owned_root(root)
+            first, _ = install_runtime_from_source(ROOT, root)
+            copy_runtime_checkout(second_source)
+            (second_source / "README.md").write_text("second healthy release\n")
+            second, _ = install_runtime_from_source(second_source, root)
+            (runtime_path(root, first.release_id) / "README.md").write_text(
+                "corrupt inactive runtime\n"
+            )
+
+            repaired, activation = install_runtime_from_source(ROOT, root)
+
+            self.assertEqual(repaired, first)
+            self.assertEqual(activation.active, first.release_id)
+            self.assertEqual(activation.previous, second.release_id)
+            self.assertEqual(validate_runtime(root, first.release_id), first)
+            self.assertEqual(validate_runtime(root, second.release_id), second)
+
+    def test_failed_active_runtime_repair_restores_the_named_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            owned_root(root)
+            first, _ = install_runtime_from_source(ROOT, root)
+            activation_before = (root / "activation").read_bytes()
+            installed = runtime_path(root, first.release_id)
+            corrupt = b"corrupt active runtime\n"
+            (installed / "README.md").write_bytes(corrupt)
+            original_rename = installer_module.os.rename
+
+            def fail_repair_install(source, destination):
+                if Path(source).name.startswith(STAGING_PREFIX) and Path(
+                    destination
+                ).resolve(strict=False) == installed.resolve(strict=False):
+                    raise OSError("simulated repair rename failure")
+                return original_rename(source, destination)
+
+            with mock.patch(
+                "llm_hud.installer.os.rename",
+                side_effect=fail_repair_install,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeLayoutError,
+                    "simulated repair rename failure",
+                ):
+                    install_runtime_from_source(ROOT, root)
+
+            self.assertEqual((root / "activation").read_bytes(), activation_before)
+            self.assertTrue(installed.is_dir())
+            self.assertEqual((installed / "README.md").read_bytes(), corrupt)
+
+    def test_repair_quarantine_sharing_failure_keeps_active_runtime_named(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            owned_root(root)
+            first, _ = install_runtime_from_source(ROOT, root)
+            activation_before = (root / "activation").read_bytes()
+            installed = runtime_path(root, first.release_id)
+            corrupt = b"corrupt active runtime\n"
+            (installed / "README.md").write_bytes(corrupt)
+            original_rename = installer_module.os.rename
+
+            def fail_quarantine(source, destination):
+                if Path(source).resolve(strict=False) == installed.resolve(strict=False):
+                    raise OSError("simulated Windows sharing violation")
+                return original_rename(source, destination)
+
+            with mock.patch(
+                "llm_hud.installer.os.rename",
+                side_effect=fail_quarantine,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeLayoutError,
+                    "cannot quarantine invalid runtime",
+                ):
+                    install_runtime_from_source(ROOT, root)
+
+            self.assertEqual((root / "activation").read_bytes(), activation_before)
+            self.assertTrue(installed.is_dir())
+            self.assertEqual((installed / "README.md").read_bytes(), corrupt)
+
+    def test_failed_repaired_runtime_validation_restores_active_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            owned_root(root)
+            first, _ = install_runtime_from_source(ROOT, root)
+            activation_before = (root / "activation").read_bytes()
+            installed = runtime_path(root, first.release_id)
+            corrupt = b"corrupt active runtime\n"
+            (installed / "README.md").write_bytes(corrupt)
+
+            with mock.patch(
+                "llm_hud.installer.validate_runtime",
+                side_effect=RuntimeLayoutError("simulated repaired validation failure"),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeLayoutError,
+                    "simulated repaired validation failure",
+                ):
+                    install_runtime_from_source(ROOT, root)
+
+            self.assertEqual((root / "activation").read_bytes(), activation_before)
+            self.assertTrue(installed.is_dir())
+            self.assertEqual((installed / "README.md").read_bytes(), corrupt)
+
     def test_unsafe_source_leaves_existing_activation_unchanged(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

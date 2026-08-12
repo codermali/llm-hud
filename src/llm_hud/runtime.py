@@ -8,6 +8,7 @@ import re
 import shutil
 import stat
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
@@ -759,6 +760,10 @@ def _finalize_runtime_unlocked(
     version: str,
     *,
     expected_content_sha256: str | None = None,
+    replace_invalid: Callable[
+        [Path, Path, Path, RuntimeMetadata, tuple[int, int]], RuntimeMetadata
+    ]
+    | None = None,
 ) -> RuntimeMetadata:
     _require_layout(root)
     version = validate_version(version)
@@ -793,7 +798,18 @@ def _finalize_runtime_unlocked(
     except OSError as error:
         raise RuntimeLayoutError(f"cannot inspect runtime destination: {error}") from error
     if destination_metadata is not None:
-        existing = validate_runtime(root, release_id)
+        try:
+            existing = validate_runtime(root, release_id)
+        except RuntimeLayoutError:
+            if replace_invalid is None:
+                raise
+            return replace_invalid(
+                root,
+                staging,
+                destination,
+                metadata,
+                (destination_metadata.st_dev, destination_metadata.st_ino),
+            )
         if existing != metadata:
             raise RuntimeLayoutError(f"release id collision at {destination}")
         try:

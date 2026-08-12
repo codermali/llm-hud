@@ -30,9 +30,10 @@ from llm_hud.runtime import (
     RuntimeMetadata,
     _activate_with_replaced_unlocked,
     _clear_activation_unlocked,
+    _finalize_runtime_unlocked,
+    _fsync_directory_required,
     _restore_activation_unlocked,
     embedded_runtime_version,
-    finalize_runtime,
     initialize_layout,
     read_activation,
     source_digest,
@@ -83,6 +84,13 @@ class _StableToolsSnapshot:
     control: _FileSnapshot
     dispatcher: _FileSnapshot
     stable_state: _FileSnapshot
+
+
+@dataclass(frozen=True)
+class _RuntimeTrash:
+    record: Path
+    payload: Path
+    identity: tuple[int, int]
 
 
 def _metadata(path: Path, description: str) -> os.stat_result:
@@ -1216,16 +1224,16 @@ def _remove_managed_runtime_trash(versions: Path) -> None:
         fsync_directory(versions)
 
 
-def _move_runtime_to_trash(
+def _quarantine_runtime(
     versions: Path,
     path: Path,
     release_id: str,
     *,
     expected_identity: tuple[int, int],
-) -> None:
-    """Atomically free a release ID before its best-effort recursive removal."""
+) -> _RuntimeTrash | None:
+    """Move one exact runtime inode aside and retain its managed trash record."""
     if not _same_directory(path, expected_identity):
-        return
+        return None
     for _ in range(8):
         token = secrets.token_hex(RUNTIME_TRASH_TOKEN_BYTES)
         record, payload = _trash_paths(versions, token)
@@ -1234,7 +1242,7 @@ def _move_runtime_to_trash(
         except FileNotFoundError:
             pass
         except OSError:
-            return
+            return None
         else:
             continue
         try:
@@ -1242,9 +1250,9 @@ def _move_runtime_to_trash(
         except FileNotFoundError:
             break
         except OSError:
-            return
+            return None
     else:
-        return
+        return None
     try:
         atomic_write_text(
             record,
@@ -1253,7 +1261,7 @@ def _move_runtime_to_trash(
             follow_symlinks=False,
         )
     except OSError:
-        return
+        return None
     try:
         os.rename(path, payload)
     except OSError:
@@ -1261,35 +1269,156 @@ def _move_runtime_to_trash(
             record.unlink()
         except OSError:
             pass
-        return
+        return None
     fsync_directory(versions)
     if not _same_directory(payload, expected_identity):
         # The release name changed identity after validation. Never recurse
-        # into that replacement; make it inert by dropping our record.
-        try:
-            path.lstat()
-        except FileNotFoundError:
-            try:
-                os.rename(payload, path)
-            except OSError:
-                pass
-        except OSError:
-            pass
+        # into or move that replacement; make it inert by dropping our record.
         try:
             record.unlink()
         except OSError:
             pass
         fsync_directory(versions)
+        return None
+    return _RuntimeTrash(record, payload, expected_identity)
+
+
+def _discard_runtime_trash(versions: Path, trash: _RuntimeTrash) -> None:
+    """Remove a quarantined runtime best-effort without following replacements."""
+    if not _same_directory(trash.payload, trash.identity):
         return
     try:
-        shutil.rmtree(payload)
+        shutil.rmtree(trash.payload)
     except OSError:
         return
     try:
-        record.unlink()
+        trash.record.unlink()
     except OSError:
         pass
     fsync_directory(versions)
+
+
+def _move_runtime_to_trash(
+    versions: Path,
+    path: Path,
+    release_id: str,
+    *,
+    expected_identity: tuple[int, int],
+) -> None:
+    """Atomically free a release ID before its best-effort recursive removal."""
+    trash = _quarantine_runtime(
+        versions,
+        path,
+        release_id,
+        expected_identity=expected_identity,
+    )
+    if trash is not None:
+        _discard_runtime_trash(versions, trash)
+
+
+def _restore_quarantined_runtime(
+    root: Path,
+    destination: Path,
+    trash: _RuntimeTrash,
+) -> None:
+    versions = destination.parent
+    if not _same_directory(trash.payload, trash.identity):
+        raise RuntimeLayoutError(
+            f"quarantined runtime changed before restoration: {trash.payload}"
+        )
+    try:
+        destination.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        raise RuntimeLayoutError(
+            f"cannot inspect runtime destination during restoration: {error}"
+        ) from error
+    else:
+        raise RuntimeLayoutError(
+            f"runtime destination was occupied during restoration: {destination}"
+        )
+    try:
+        os.rename(trash.payload, destination)
+    except OSError as error:
+        raise RuntimeLayoutError(
+            f"cannot restore quarantined runtime {destination}: {error}"
+        ) from error
+    _fsync_directory_required(versions)
+    _fsync_directory_required(root)
+    try:
+        trash.record.unlink()
+    except OSError:
+        pass
+    fsync_directory(versions)
+
+
+def _replace_invalid_runtime_unlocked(
+    root: Path,
+    staging: Path,
+    destination: Path,
+    metadata: RuntimeMetadata,
+    expected_identity: tuple[int, int],
+) -> RuntimeMetadata:
+    """Replace one corrupt release while ``RuntimeLock`` protects its name."""
+    staging_metadata = _metadata(staging, "staged runtime repair")
+    if stat.S_ISLNK(staging_metadata.st_mode) or not stat.S_ISDIR(
+        staging_metadata.st_mode
+    ):
+        raise RuntimeLayoutError(f"staged runtime repair is not a directory: {staging}")
+    staging_identity = (staging_metadata.st_dev, staging_metadata.st_ino)
+    versions = destination.parent
+    trash = _quarantine_runtime(
+        versions,
+        destination,
+        metadata.release_id,
+        expected_identity=expected_identity,
+    )
+    if trash is None:
+        raise RuntimeLayoutError(
+            f"cannot quarantine invalid runtime for repair: {destination}"
+        )
+
+    installed = False
+    try:
+        os.rename(staging, destination)
+        installed = True
+        _fsync_directory_required(versions)
+        _fsync_directory_required(root)
+        repaired = validate_runtime(root, metadata.release_id)
+    except Exception as failure:
+        rollback_errors: list[str] = []
+        if installed:
+            if _same_directory(destination, staging_identity):
+                try:
+                    os.rename(destination, staging)
+                    _fsync_directory_required(versions)
+                    _fsync_directory_required(root)
+                except OSError as error:
+                    rollback_errors.append(
+                        f"cannot move failed repair back to staging: {error}"
+                    )
+            else:
+                rollback_errors.append(
+                    f"repaired runtime changed before rollback: {destination}"
+                )
+        try:
+            _restore_quarantined_runtime(root, destination, trash)
+        except RuntimeLayoutError as error:
+            rollback_errors.append(str(error))
+        if rollback_errors:
+            raise RuntimeLayoutError(
+                f"runtime repair failed ({failure}); rollback incomplete: "
+                + "; ".join(rollback_errors)
+            ) from failure
+        if isinstance(failure, OSError):
+            raise RuntimeLayoutError(
+                f"cannot install repaired runtime {destination}: {failure}"
+            ) from failure
+        raise
+
+    _discard_runtime_trash(versions, trash)
+    return repaired
 
 
 def _prune_inactive_runtimes(root: Path, *, lock_timeout: float = 10.0) -> None:
@@ -1476,12 +1605,14 @@ def _install_runtime_from_source(
             expected_content_sha256=expected_content_sha256,
         )
         _smoke_test_runtime_candidate(staging, python, version)
-        metadata = finalize_runtime(
-            root,
-            staging,
-            version,
-            expected_content_sha256=expected_content_sha256,
-        )
+        with RuntimeLock(root):
+            metadata = _finalize_runtime_unlocked(
+                root,
+                staging,
+                version,
+                expected_content_sha256=expected_content_sha256,
+                replace_invalid=_replace_invalid_runtime_unlocked,
+            )
         _preflight_runtime_release(
             root,
             metadata.release_id,
