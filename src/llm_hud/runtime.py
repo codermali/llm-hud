@@ -117,22 +117,12 @@ def _read_owned_text(path: Path, description: str) -> str | None:
         return None
     except OSError as error:
         raise RuntimeLayoutError(f"cannot inspect {description} {path}: {error}") from error
-    if (
-        stat.S_ISLNK(metadata.st_mode)
-        or not stat.S_ISREG(metadata.st_mode)
-        or metadata.st_nlink != 1
-    ):
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         raise RuntimeLayoutError(f"{description} is not a regular managed file: {path}")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
         with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
-            opened_metadata = os.fstat(handle.fileno())
-            if (
-                not stat.S_ISREG(opened_metadata.st_mode)
-                or opened_metadata.st_nlink != 1
-            ):
-                raise RuntimeLayoutError(f"{description} is not a regular file: {path}")
             return handle.read()
     except (OSError, UnicodeError) as error:
         raise RuntimeLayoutError(f"cannot read {description} {path}: {error}") from error
@@ -484,7 +474,7 @@ def _read_source_file(path: Path) -> tuple[bytes, bool]:
         raise RuntimeLayoutError(f"cannot open runtime source file {path}: {error}") from error
     try:
         metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        if not stat.S_ISREG(metadata.st_mode):
             raise RuntimeLayoutError(f"runtime source file is not regular: {path}")
         chunks: list[bytes] = []
         while True:
@@ -507,10 +497,8 @@ def _fsync_regular_file(path: Path) -> None:
         raise RuntimeLayoutError(f"cannot open runtime file for sync {path}: {error}") from error
     try:
         metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-            raise RuntimeLayoutError(
-                f"runtime file is not a single-link regular file: {path}"
-            )
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeLayoutError(f"runtime file is not a regular file: {path}")
         os.fsync(descriptor)
     except OSError as error:
         raise RuntimeLayoutError(f"cannot sync runtime file {path}: {error}") from error
@@ -616,10 +604,6 @@ def source_digest(root: Path, *, reject_python_cache: bool = False) -> str:
                         f"runtime source path is a symlink: {path}"
                     )
                 if stat.S_ISREG(metadata.st_mode):
-                    if metadata.st_nlink != 1:
-                        raise RuntimeLayoutError(
-                            f"runtime source file has multiple hard links: {path}"
-                        )
                     is_bytecode = path.suffix in (".pyc", ".pyo")
                     if in_python_cache and is_bytecode:
                         if reject_python_cache:
@@ -806,9 +790,7 @@ class RuntimeLock:
             raise RuntimeLayoutError(f"cannot verify update lock {path}: {error}") from error
         if (
             not stat.S_ISREG(descriptor_metadata.st_mode)
-            or descriptor_metadata.st_nlink != 1
             or stat.S_ISLNK(path_metadata.st_mode)
-            or path_metadata.st_nlink != 1
             or (descriptor_metadata.st_dev, descriptor_metadata.st_ino)
             != (path_metadata.st_dev, path_metadata.st_ino)
         ):

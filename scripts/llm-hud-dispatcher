@@ -42,23 +42,12 @@ def _read_owned_text(path: Path, description: str) -> str:
         before = path.lstat()
     except OSError as error:
         raise DispatcherError(f"cannot inspect {description} {path}: {error}") from error
-    if (
-        stat.S_ISLNK(before.st_mode)
-        or not stat.S_ISREG(before.st_mode)
-        or before.st_nlink != 1
-    ):
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
         raise DispatcherError(f"{description} is not a regular managed file: {path}")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     descriptor = -1
     try:
         descriptor = os.open(path, flags)
-        opened = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or opened.st_nlink != 1
-            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
-        ):
-            raise DispatcherError(f"{description} changed while opening: {path}")
         chunks: list[bytes] = []
         remaining = MAX_STABLE_FILE_SIZE + 1
         while remaining:
@@ -83,11 +72,7 @@ def _require_regular_file(path: Path, description: str) -> None:
         metadata = path.lstat()
     except OSError as error:
         raise DispatcherError(f"cannot inspect {description} {path}: {error}") from error
-    if (
-        stat.S_ISLNK(metadata.st_mode)
-        or not stat.S_ISREG(metadata.st_mode)
-        or metadata.st_nlink != 1
-    ):
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         raise DispatcherError(f"{description} is not a regular managed file: {path}")
 
 

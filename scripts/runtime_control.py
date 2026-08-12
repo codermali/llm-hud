@@ -63,13 +63,6 @@ class Activation:
                 raise ControlError("active and previous releases must differ")
 
 
-@dataclass(frozen=True)
-class FileSnapshot:
-    text: str
-    device: int
-    inode: int
-
-
 def validate_release_id(value: object) -> str:
     if not isinstance(value, str) or not RELEASE_ID.fullmatch(value):
         raise ControlError(f"invalid release id: {value!r}")
@@ -93,28 +86,17 @@ def _require_directory(path: Path, description: str) -> None:
         raise ControlError(f"{description} is not a regular directory: {path}")
 
 
-def _read_owned_text(path: Path, description: str) -> FileSnapshot:
+def _read_owned_text(path: Path, description: str) -> str:
     try:
         before = path.lstat()
     except OSError as error:
         raise ControlError(f"cannot inspect {description} {path}: {error}") from error
-    if (
-        stat.S_ISLNK(before.st_mode)
-        or not stat.S_ISREG(before.st_mode)
-        or before.st_nlink != 1
-    ):
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
         raise ControlError(f"{description} is not a regular managed file: {path}")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     descriptor = -1
     try:
         descriptor = os.open(path, flags)
-        opened = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or opened.st_nlink != 1
-            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
-        ):
-            raise ControlError(f"{description} changed while opening: {path}")
         chunks: list[bytes] = []
         remaining = MAX_MANAGED_TEXT_SIZE + 1
         while remaining:
@@ -126,11 +108,7 @@ def _read_owned_text(path: Path, description: str) -> FileSnapshot:
         payload = b"".join(chunks)
         if len(payload) > MAX_MANAGED_TEXT_SIZE:
             raise ControlError(f"{description} is too large: {path}")
-        return FileSnapshot(
-            text=payload.decode("utf-8"),
-            device=opened.st_dev,
-            inode=opened.st_ino,
-        )
+        return payload.decode("utf-8")
     except (OSError, UnicodeError) as error:
         raise ControlError(f"cannot read {description} {path}: {error}") from error
     finally:
@@ -143,14 +121,14 @@ def _require_install_ownership(root: Path) -> None:
         raise ControlError(f"install root must be absolute: {root}")
     _require_directory(root, "install root")
     marker = _read_owned_text(root / INSTALL_MARKER, "install marker")
-    if marker.text != INSTALL_MARKER_VALUE:
+    if marker != INSTALL_MARKER_VALUE:
         raise ControlError(f"install root is not owned by llm-hud: {root}")
 
 
 def _require_layout(root: Path) -> None:
     _require_install_ownership(root)
     marker = _read_owned_text(root / LAYOUT_MARKER, "layout marker")
-    if marker.text != LAYOUT_MARKER_VALUE:
+    if marker != LAYOUT_MARKER_VALUE:
         raise ControlError(f"missing or unrecognized runtime layout in {root}")
     _require_directory(root / VERSIONS_DIRECTORY, "versions directory")
 
@@ -165,11 +143,7 @@ def _require_stable_control(root: Path) -> None:
         metadata = actual.lstat()
     except OSError as error:
         raise ControlError(f"cannot inspect stable runtime control {actual}: {error}") from error
-    if (
-        stat.S_ISLNK(metadata.st_mode)
-        or not stat.S_ISREG(metadata.st_mode)
-        or metadata.st_nlink != 1
-    ):
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         raise ControlError(f"stable runtime control is not a regular managed file: {actual}")
 
 
@@ -189,9 +163,9 @@ def parse_activation(text: str) -> Activation:
     return value
 
 
-def _read_activation(root: Path) -> tuple[Activation, FileSnapshot]:
-    snapshot = _read_owned_text(root / ACTIVATION_FILE, "activation record")
-    return parse_activation(snapshot.text), snapshot
+def _read_activation(root: Path) -> tuple[Activation, str]:
+    text = _read_owned_text(root / ACTIVATION_FILE, "activation record")
+    return parse_activation(text), text
 
 
 def _read_content_file(path: Path) -> tuple[bytes, bool]:
@@ -200,8 +174,8 @@ def _read_content_file(path: Path) -> tuple[bytes, bool]:
     try:
         descriptor = os.open(path, flags)
         metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-            raise ControlError(f"runtime file is not a single-link regular file: {path}")
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ControlError(f"runtime file is not a regular file: {path}")
         chunks: list[bytes] = []
         while True:
             chunk = os.read(descriptor, 1024 * 1024)
@@ -237,10 +211,6 @@ def _source_digest(root: Path) -> str:
                     if stat.S_ISLNK(metadata.st_mode):
                         raise ControlError(f"runtime source path is a symlink: {path}")
                     if stat.S_ISREG(metadata.st_mode):
-                        if metadata.st_nlink != 1:
-                            raise ControlError(
-                                f"runtime source file has multiple hard links: {path}"
-                            )
                         is_bytecode = path.suffix in (".pyc", ".pyo")
                         if in_python_cache and is_bytecode:
                             continue
@@ -256,10 +226,6 @@ def _source_digest(root: Path) -> str:
                     f"cannot inspect runtime source {candidate}: {error}"
                 ) from error
         elif stat.S_ISREG(candidate_metadata.st_mode):
-            if candidate_metadata.st_nlink != 1:
-                raise ControlError(
-                    f"runtime source file has multiple hard links: {candidate}"
-                )
             files.append(candidate)
         else:
             raise ControlError(f"runtime source path is not regular: {candidate}")
@@ -312,7 +278,7 @@ def _validate_runtime(root: Path, release_id: str) -> Path:
 
     marker = _read_owned_text(path / RUNTIME_MARKER, "runtime marker")
     try:
-        payload = json.loads(marker.text)
+        payload = json.loads(marker)
     except json.JSONDecodeError as error:
         raise ControlError(f"invalid runtime marker {path}: {error}") from error
     expected_keys = {"schema", "release_id", "version", "content_sha256"}
@@ -340,11 +306,7 @@ def _validate_runtime(root: Path, release_id: str) -> Path:
             metadata = required.lstat()
         except OSError as error:
             raise ControlError(f"runtime file is missing: {required}") from error
-        if (
-            stat.S_ISLNK(metadata.st_mode)
-            or not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_nlink != 1
-        ):
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
             raise ControlError(f"runtime file is not a regular managed file: {required}")
     launcher = path / "bin" / "llm-hud"
     if not os.access(launcher, os.X_OK):
@@ -371,7 +333,7 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _atomic_write_activation(
-    root: Path, value: Activation, expected: FileSnapshot
+    root: Path, value: Activation, expected: str
 ) -> None:
     path = root / ACTIVATION_FILE
     descriptor, temp_name = tempfile.mkstemp(prefix=".activation.", dir=root)
@@ -389,7 +351,7 @@ def _atomic_write_activation(
             raise ControlError(f"cannot verify activation update: {error}") from error
         if current != expected:
             raise ControlError("activation record changed during rollback")
-        if not stat.S_ISREG(temp_metadata.st_mode) or temp_metadata.st_nlink != 1:
+        if not stat.S_ISREG(temp_metadata.st_mode):
             raise ControlError("temporary activation record is not a regular managed file")
         try:
             os.replace(temp, path)
@@ -425,9 +387,7 @@ class RuntimeLock:
             raise ControlError(f"cannot verify update lock {path}: {error}") from error
         if (
             not stat.S_ISREG(opened.st_mode)
-            or opened.st_nlink != 1
             or stat.S_ISLNK(current.st_mode)
-            or current.st_nlink != 1
             or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
         ):
             os.close(descriptor)

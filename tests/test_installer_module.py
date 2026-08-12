@@ -882,27 +882,6 @@ class RuntimeInstallerTests(unittest.TestCase):
 
             self.assertIsNone(read_activation(root))
 
-    def test_source_hard_link_is_rejected_without_touching_external_file(self):
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            root = base / "runtime"
-            source = base / "source"
-            root.mkdir()
-            source.mkdir()
-            owned_root(root)
-            copy_runtime_checkout(source)
-            external = base / "external"
-            external.write_text("outside")
-            (source / "README.md").unlink()
-            os.link(external, source / "README.md")
-
-            with self.assertRaisesRegex(RuntimeLayoutError, "regular"):
-                install_runtime_from_source(source, root)
-
-            self.assertEqual(external.read_text(), "outside")
-            self.assertFalse((root / "activation").exists())
-            self.assertFalse((root / ".llm-hud-layout").exists())
-
     def test_cleanup_does_not_delete_a_replacement_staging_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "runtime"

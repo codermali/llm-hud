@@ -399,24 +399,6 @@ class RuntimeSourceTests(unittest.TestCase):
                 ],
             )
 
-    def test_staging_rejects_external_hard_links_without_activation(self):
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            root = base / "root"
-            root.mkdir()
-            initialize_owned_layout(root)
-            staging = stage_runtime(root, "candidate", "1.2.3")
-            external = base / "external-readme"
-            external.write_text("shared")
-            (staging / "README.md").unlink()
-            os.link(external, staging / "README.md")
-
-            with self.assertRaisesRegex(RuntimeLayoutError, "regular"):
-                finalize_runtime(root, staging, "1.2.3")
-
-            self.assertIsNone(read_activation(root))
-            self.assertEqual(external.read_text(), "shared")
-
     def test_expected_content_mismatch_leaves_staging_and_activation_untouched(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

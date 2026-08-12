@@ -18,7 +18,6 @@ from llm_hud.runtime import (
     Activation,
     activate,
     finalize_runtime,
-    format_activation,
     initialize_layout,
     read_activation,
     runtime_path,
@@ -158,30 +157,26 @@ class StableDispatcherTests(unittest.TestCase):
             self.assertIn("digest", result.stderr)
             self.assertEqual((root / ACTIVATION_NAME).read_bytes(), before)
 
-    def test_rejects_symlinked_and_hardlinked_activation_records(self):
-        for kind in ("symlink", "hardlink"):
-            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory) / "runtime"
-                root.mkdir()
-                dispatcher = install_stable_control(root)
-                release_id = create_runtime(root, "first", "1.0.0")
-                activate(root, release_id)
-                activation = root / ACTIVATION_NAME
-                external = root / "external-activation"
-                external.write_bytes(activation.read_bytes())
-                activation.unlink()
-                if kind == "symlink":
-                    activation.symlink_to(external.name)
-                else:
-                    os.link(external, activation)
+    def test_rejects_a_symlinked_activation_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            dispatcher = install_stable_control(root)
+            release_id = create_runtime(root, "first", "1.0.0")
+            activate(root, release_id)
+            activation = root / ACTIVATION_NAME
+            external = root / "external-activation"
+            external.write_bytes(activation.read_bytes())
+            activation.unlink()
+            activation.symlink_to(external.name)
 
-                result = run_dispatcher(dispatcher, "doctor")
+            result = run_dispatcher(dispatcher, "doctor")
 
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("activation record", result.stderr)
-                self.assertEqual(external.read_text(), f"llm-hud-activation-v1 {release_id} -\n")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("activation record", result.stderr)
+            self.assertEqual(external.read_text(), f"llm-hud-activation-v1 {release_id} -\n")
 
-    def test_rejects_noncanonical_activation_and_hardlinked_runtime_content(self):
+    def test_rejects_a_noncanonical_activation_record(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "runtime"
             root.mkdir()
@@ -190,59 +185,43 @@ class StableDispatcherTests(unittest.TestCase):
             activate(root, release_id)
             activation = root / ACTIVATION_NAME
             activation.write_text(f"llm-hud-activation-v1  {release_id} -\n")
+
             malformed = run_dispatcher(dispatcher, "doctor")
+
             self.assertNotEqual(malformed.returncode, 0)
             self.assertIn("invalid activation", malformed.stderr)
 
-            activation.write_text(format_activation(Activation(release_id)))
-            readme = runtime_path(root, release_id) / "README.md"
-            external = root / "external-readme"
-            external.write_bytes(readme.read_bytes())
-            readme.unlink()
-            os.link(external, readme)
-            hardlinked = run_dispatcher(dispatcher, "doctor")
-            self.assertNotEqual(hardlinked.returncode, 0)
-            self.assertIn("hard links", hardlinked.stderr)
+    def test_rejects_a_symlinked_stable_control(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            dispatcher = install_stable_control(root)
+            control = root / "control" / "runtime_control.py"
+            external = root / "external-control.py"
+            external.write_bytes(control.read_bytes())
+            control.unlink()
+            control.symlink_to(external)
 
-    def test_rejects_symlinked_or_hardlinked_stable_control(self):
-        for kind in ("symlink", "hardlink"):
-            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory) / "runtime"
-                root.mkdir()
-                dispatcher = install_stable_control(root)
-                control = root / "control" / "runtime_control.py"
-                external = root / "external-control.py"
-                external.write_bytes(control.read_bytes())
-                control.unlink()
-                if kind == "symlink":
-                    control.symlink_to(external)
-                else:
-                    os.link(external, control)
+            result = run_dispatcher(dispatcher, "rollback")
 
-                result = run_dispatcher(dispatcher, "rollback")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("stable runtime control", result.stderr)
 
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("stable runtime control", result.stderr)
+    def test_rejects_a_symlinked_ownership_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            dispatcher = install_stable_control(root)
+            marker = root / INSTALL_MARKER_NAME
+            external = root / "external-marker"
+            external.write_bytes(marker.read_bytes())
+            marker.unlink()
+            marker.symlink_to(external.name)
 
-    def test_rejects_symlinked_and_hardlinked_ownership_markers(self):
-        for kind in ("symlink", "hardlink"):
-            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory) / "runtime"
-                root.mkdir()
-                dispatcher = install_stable_control(root)
-                marker = root / INSTALL_MARKER_NAME
-                external = root / "external-marker"
-                external.write_bytes(marker.read_bytes())
-                marker.unlink()
-                if kind == "symlink":
-                    marker.symlink_to(external.name)
-                else:
-                    os.link(external, marker)
+            result = run_dispatcher(dispatcher, "doctor")
 
-                result = run_dispatcher(dispatcher, "doctor")
-
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("install marker", result.stderr)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("install marker", result.stderr)
 
 
 class StableRollbackTests(unittest.TestCase):

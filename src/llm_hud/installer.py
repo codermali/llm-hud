@@ -141,32 +141,14 @@ def claim_install_root(root: Path) -> None:
     fsync_directory(root)
 
 
-def _read_regular_bytes(
-    path: Path,
-    description: str,
-    *,
-    expected_links: int = 1,
-) -> bytes:
+def _read_regular_bytes(path: Path, description: str) -> bytes:
     before = _metadata(path, description)
-    if (
-        stat.S_ISLNK(before.st_mode)
-        or not stat.S_ISREG(before.st_mode)
-        or before.st_nlink != expected_links
-    ):
-        raise RuntimeLayoutError(
-            f"{description} is not a single-link regular file: {path}"
-        )
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        raise RuntimeLayoutError(f"{description} is not a regular file: {path}")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     descriptor = -1
     try:
         descriptor = os.open(path, flags)
-        opened = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or opened.st_nlink != expected_links
-            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
-        ):
-            raise RuntimeLayoutError(f"{description} changed while opening: {path}")
         chunks: list[bytes] = []
         while True:
             chunk = os.read(descriptor, 1024 * 1024)
@@ -496,7 +478,6 @@ def _validate_python_cache(path: Path) -> None:
         entry_metadata = _metadata(entry_path, "Python cache entry")
         if (
             not stat.S_ISREG(entry_metadata.st_mode)
-            or entry_metadata.st_nlink != 1
             or entry_path.suffix not in (".pyc", ".pyo")
         ):
             raise RuntimeLayoutError(
@@ -506,13 +487,9 @@ def _validate_python_cache(path: Path) -> None:
 
 def _copy_regular_file(source: Path, destination: Path) -> None:
     before = _metadata(source, "runtime source file")
-    if (
-        stat.S_ISLNK(before.st_mode)
-        or not stat.S_ISREG(before.st_mode)
-        or before.st_nlink != 1
-    ):
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
         raise RuntimeLayoutError(
-            f"runtime source file is not a single-link regular file: {source}"
+            f"runtime source file is not a regular file: {source}"
         )
     source_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     destination_flags = (
@@ -526,12 +503,8 @@ def _copy_regular_file(source: Path, destination: Path) -> None:
     try:
         source_descriptor = os.open(source, source_flags)
         opened = os.fstat(source_descriptor)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or opened.st_nlink != 1
-            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
-        ):
-            raise RuntimeLayoutError(f"runtime source changed while opening: {source}")
+        if not stat.S_ISREG(opened.st_mode):
+            raise RuntimeLayoutError(f"runtime source is not a regular file: {source}")
         executable = bool(opened.st_mode & 0o111)
         destination_descriptor = os.open(destination, destination_flags, 0o600)
         os.fchmod(destination_descriptor, 0o700 if executable else 0o600)
