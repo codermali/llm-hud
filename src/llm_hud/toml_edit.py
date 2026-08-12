@@ -140,7 +140,9 @@ def _root_dotted_assignment(
     Only statements before the first table header qualify: the same text under
     a [section] header would belong to that section, not to `table`.
     """
-    pattern = re.compile(rf"^(\s*){re.escape(table)}\.{re.escape(key)}\s*=")
+    pattern = re.compile(
+        rf"^(\s*){re.escape(table)}\s*\.\s*{re.escape(key)}\s*="
+    )
     for index, line in enumerate(lines):
         if not starts[index]:
             continue
@@ -160,7 +162,11 @@ def _root_dotted_table_end(
     lines: list[str], starts: list[bool], table: str
 ) -> int | None:
     """Index just past the last root-level `table.* = ...` assignment."""
-    pattern = re.compile(rf"^\s*{re.escape(table)}\.\S+\s*=")
+    bare_key = r"[A-Za-z0-9_-]+"
+    dotted_tail = rf"{bare_key}(?:\s*\.\s*{bare_key})*"
+    pattern = re.compile(
+        rf"^\s*{re.escape(table)}\s*\.\s*{dotted_tail}\s*="
+    )
     last_end: int | None = None
     for index, line in enumerate(lines):
         if not starts[index]:

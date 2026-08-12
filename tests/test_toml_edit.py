@@ -82,6 +82,16 @@ class SetArrayTests(unittest.TestCase):
         self.assertTrue(parsed["tui"]["notifications"])
         self.assertEqual(parsed["model"], "gpt-5")
 
+    def test_replaces_root_dotted_assignment_with_whitespace_around_dot(self):
+        text = 'tui . status_line = ["old"]\ntui . notifications = true\n'
+        result = set_array(text, "tui", "status_line", ["new"])
+        self.assertIn('tui.status_line = ["new"]\n', result)
+        self.assertIn("tui . notifications = true\n", result)
+        self.assertNotIn("[tui]", result)
+        parsed = tomllib.loads(result)
+        self.assertEqual(parsed["tui"]["status_line"], ["new"])
+        self.assertTrue(parsed["tui"]["notifications"])
+
     def test_extends_a_table_that_exists_only_in_dotted_form(self):
         text = 'tui.notifications = true\nmodel = "gpt-5"\n'
         result = set_array(text, "tui", "status_line", ["a"])
@@ -90,6 +100,16 @@ class SetArrayTests(unittest.TestCase):
         parsed = tomllib.loads(result)
         self.assertEqual(parsed["tui"]["status_line"], ["a"])
         self.assertTrue(parsed["tui"]["notifications"])
+
+    def test_extends_spaced_root_dotted_assignments(self):
+        text = 'tui . notifications = true\nmodel = "gpt-5"\n'
+        result = set_array(text, "tui", "status_line", ["a"])
+        self.assertIn('tui.status_line = ["a"]\n', result)
+        self.assertNotIn("[tui]", result)
+        parsed = tomllib.loads(result)
+        self.assertEqual(parsed["tui"]["status_line"], ["a"])
+        self.assertTrue(parsed["tui"]["notifications"])
+        self.assertEqual(parsed["model"], "gpt-5")
 
     def test_dotted_lookalike_under_a_header_is_not_the_root_table(self):
         text = '[server]\ntui.status_line = ["x"]\n'
@@ -134,6 +154,15 @@ class RemoveKeyTests(unittest.TestCase):
     def test_removes_root_dotted_assignment(self):
         text = 'tui.status_line = ["a"]\ntui.notifications = true\n'
         parsed = tomllib.loads(remove_key(text, "tui", "status_line"))
+        self.assertNotIn("status_line", parsed["tui"])
+        self.assertTrue(parsed["tui"]["notifications"])
+
+    def test_removes_root_dotted_assignment_with_whitespace_around_dot(self):
+        text = 'tui . status_line = ["a"]\ntui . notifications = true\n'
+        result = remove_key(text, "tui", "status_line")
+        self.assertNotIn("status_line", result)
+        self.assertIn("tui . notifications = true\n", result)
+        parsed = tomllib.loads(result)
         self.assertNotIn("status_line", parsed["tui"])
         self.assertTrue(parsed["tui"]["notifications"])
 
