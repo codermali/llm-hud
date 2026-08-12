@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import unittest
 
 from llm_hud import _tomllib as tomllib
@@ -102,6 +103,14 @@ class SetArrayTests(unittest.TestCase):
         self.assertNotIn("\n", result.replace("\r\n", ""))
         self.assertEqual(tomllib.loads(result)["tui"]["status_line"], ["b"])
 
+    def test_unrelated_nested_nan_is_preserved(self):
+        text = 'metrics = [{ sample = nan }]\n[tui]\nnotifications = true\n'
+        result = set_array(text, "tui", "status_line", ["a"])
+        parsed = tomllib.loads(result)
+        self.assertTrue(math.isnan(parsed["metrics"][0]["sample"]))
+        self.assertEqual(parsed["tui"]["status_line"], ["a"])
+        self.assertTrue(parsed["tui"]["notifications"])
+
 
 class RemoveKeyTests(unittest.TestCase):
     def test_removes_only_target_key(self):
@@ -125,6 +134,17 @@ class RemoveKeyTests(unittest.TestCase):
     def test_removes_root_dotted_assignment(self):
         text = 'tui.status_line = ["a"]\ntui.notifications = true\n'
         parsed = tomllib.loads(remove_key(text, "tui", "status_line"))
+        self.assertNotIn("status_line", parsed["tui"])
+        self.assertTrue(parsed["tui"]["notifications"])
+
+    def test_unrelated_nested_nan_is_preserved(self):
+        text = (
+            'metrics = { sample = nan }\n'
+            '[tui]\nstatus_line = ["a"]\nnotifications = true\n'
+        )
+        result = remove_key(text, "tui", "status_line")
+        parsed = tomllib.loads(result)
+        self.assertTrue(math.isnan(parsed["metrics"]["sample"]))
         self.assertNotIn("status_line", parsed["tui"])
         self.assertTrue(parsed["tui"]["notifications"])
 

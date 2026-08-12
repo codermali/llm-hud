@@ -18,6 +18,7 @@ duplicate-table parse error rather than a silent write to the wrong place.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 
@@ -184,6 +185,23 @@ def _format_array(key: str, values: list[str], indent: str = "", newline: str = 
     return f"{indent}{key} = [{encoded}]{newline}"
 
 
+def _semantic_equal(left: object, right: object) -> bool:
+    """Compare parsed TOML values while treating matching NaNs as equal."""
+    if isinstance(left, float) and isinstance(right, float):
+        if math.isnan(left) and math.isnan(right):
+            return True
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(
+            _semantic_equal(left[key], right[key]) for key in left
+        )
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(
+            _semantic_equal(left_value, right_value)
+            for left_value, right_value in zip(left, right)
+        )
+    return left == right
+
+
 def _verify(original: str, result: str, table: str, key: str, values: list[str] | None) -> None:
     """Fail unless `result` differs from `original` only in table.key."""
     expected = tomllib.loads(original)
@@ -198,7 +216,7 @@ def _verify(original: str, result: str, table: str, key: str, values: list[str] 
         node.pop(key, None)
     else:
         node[key] = values
-    if tomllib.loads(result) != expected:
+    if not _semantic_equal(tomllib.loads(result), expected):
         action = "remove" if values is None else "set"
         raise ValueError(
             f"refusing to {action} {table}.{key}: the edit would change unrelated "
