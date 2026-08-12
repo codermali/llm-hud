@@ -19,8 +19,11 @@ Claude Code 支持外部状态栏命令，因此可以显示完整的双行 HUD�
 
 ```text
 Claude · Opus · ~/projects/example
-5h  ████████░░   76% left  ↻ 14:30    7d  ██████░░░░   59% left  ↻ Fri 09:00
+5h  ██░░░░░░░░   24% used  ↻ 14:30    7d  ████░░░░░░   41% used  ↻ Fri 09:00
 ```
+
+额度按"已用百分比"显示,与 Claude Code 自带的 `/status` 用量页同一口径:条形越满
+表示用得越多,超过 70% 变红。
 
 额度数据由 Claude Code 提供，只在 Claude Pro/Max 订阅账户上出现，并且要等到会话的
 首次响应之后。没有额度数据时（首次响应之前，或使用 API key 等不提供额度的账户），

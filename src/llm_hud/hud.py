@@ -16,7 +16,7 @@ BAR_WIDTH = 10
 @dataclass(frozen=True)
 class UsageWindow:
     label: str
-    remaining: float | None = None
+    used: float | None = None
     resets_at: float | None = None
 
 
@@ -86,12 +86,12 @@ def _percent(value: float | None) -> str:
     return f"{value:.0f}%"
 
 
-def _remaining_color(value: float | None) -> str:
+def _used_color(value: float | None) -> str:
     if value is None:
         return "2"
-    if value >= 60:
+    if value <= 40:
         return "32"
-    if value >= 30:
+    if value <= 70:
         return "33"
     return "31"
 
@@ -107,16 +107,16 @@ def _reset_text(window: UsageWindow) -> str | None:
 
 
 def _window_segment(window: UsageWindow, color: bool) -> str:
-    if window.remaining is None:
+    if window.used is None:
         filled = 0
     else:
-        bounded = max(0.0, min(100.0, window.remaining))
+        bounded = max(0.0, min(100.0, window.used))
         filled = max(0, min(BAR_WIDTH, int(bounded / 10 + 0.5)))
-    tone = _remaining_color(window.remaining)
+    tone = _used_color(window.used)
     bar = _style("█" * filled, tone, color) + _style("░" * (BAR_WIDTH - filled), "2", color)
-    percent = _style(f"{_percent(window.remaining):>4}", tone, color)
-    if window.remaining is not None:
-        percent = f"{percent} {_style('left', '2', color)}"
+    percent = _style(f"{_percent(window.used):>4}", tone, color)
+    if window.used is not None:
+        percent = f"{percent} {_style('used', '2', color)}"
     parts = [f"{window.label:<2}", bar, percent]
     reset = _reset_text(window)
     if reset:

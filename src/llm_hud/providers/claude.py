@@ -187,13 +187,13 @@ def _validate_installation_state(state: dict[str, Any]) -> None:
         raise StateFileError("installation state has inconsistent installed_status_line")
 
 
-def _remaining(window: object) -> float | None:
+def _used(window: object) -> float | None:
     if not isinstance(window, dict):
         return None
     value = window.get("used_percentage")
     if not isinstance(value, (int, float)):
         return None
-    return max(0.0, min(100.0, 100.0 - float(value)))
+    return max(0.0, min(100.0, float(value)))
 
 
 def _resets_at(window: object) -> float | None:
@@ -240,7 +240,7 @@ def snapshot_from_payload(payload: dict[str, Any]) -> HudSnapshot:
     limits = payload.get("rate_limits")
     limits = limits if isinstance(limits, dict) else {}
     windows = tuple(
-        UsageWindow(label, _remaining(limits[key]), _resets_at(limits[key]))
+        UsageWindow(label, _used(limits[key]), _resets_at(limits[key]))
         for key, label in (("five_hour", "5h"), ("seven_day", "7d"))
         if key in limits
     )

@@ -81,7 +81,7 @@ class ClaudeProviderTests(unittest.TestCase):
                 self.assertEqual(
                     render(raw, color=False),
                     "Claude · Opus · ~/project\n"
-                    "5h  ████████░░   76% left    7d  ██████░░░░   59% left",
+                    "5h  ██░░░░░░░░   24% used    7d  ████░░░░░░   41% used",
                 )
 
                 self.assertEqual(provider.install("/opt/llm-hud").status, "installed")
@@ -598,7 +598,7 @@ class ClaudeProviderTests(unittest.TestCase):
                 ).encode()
                 self.assertEqual(
                     render(partial, color=False),
-                    "Claude · Opus\n7d  ██████░░░░   59% left",
+                    "Claude · Opus\n7d  ████░░░░░░   41% used",
                 )
                 empty_window = json.dumps(
                     {
@@ -623,12 +623,12 @@ class ClaudeProviderTests(unittest.TestCase):
         ).encode()
         wide = (
             "Claude · Opus\n"
-            "5h  ████████░░   76% left    7d  ██████░░░░   59% left"
+            "5h  ██░░░░░░░░   24% used    7d  ████░░░░░░   41% used"
         )
         narrow = (
             "Claude · Opus\n"
-            "5h  ████████░░   76% left\n"
-            "7d  ██████░░░░   59% left"
+            "5h  ██░░░░░░░░   24% used\n"
+            "7d  ████░░░░░░   41% used"
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
