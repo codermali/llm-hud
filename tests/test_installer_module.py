@@ -753,6 +753,22 @@ class RuntimeInstallerTests(unittest.TestCase):
                 identities,
             )
 
+    def test_windows_stable_tool_match_ignores_posix_mode_bits(self):
+        content = b"stable tool\n"
+        snapshot = installer_module._FileSnapshot(
+            content=content,
+            identity=(1, 2),
+            mode=0o666,
+        )
+        with mock.patch("llm_hud.installer.os.name", "nt"):
+            self.assertTrue(
+                installer_module._stable_tool_matches(
+                    snapshot,
+                    hashlib.sha256(content).hexdigest(),
+                    0o700,
+                )
+            )
+
     def test_managed_launcher_ignores_pythonpath_before_stable_validation(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -1040,6 +1056,59 @@ class RuntimeInstallerTests(unittest.TestCase):
                         before,
                     )
 
+    def test_oversized_stable_tools_are_rejected_before_any_install_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "runtime"
+            launcher = base / "bin" / "llm-hud"
+            root.mkdir()
+            owned_root(root)
+            install_complete(ROOT, root, launcher, Path(sys.executable))
+            activation = root / "activation"
+            control = root / installer_module.CONTROL_DESTINATION
+            dispatcher = root / installer_module.DISPATCHER_DESTINATION
+            before = {
+                path: (
+                    path.read_bytes(),
+                    path.stat().st_mode & 0o777,
+                    (path.stat().st_dev, path.stat().st_ino),
+                )
+                for path in (activation, control, dispatcher, launcher)
+            }
+            releases_before = {path.name for path in (root / "versions").iterdir()}
+
+            for relative in (
+                installer_module.DISPATCHER_SOURCE,
+                installer_module.CONTROL_SOURCE,
+            ):
+                with self.subTest(relative=relative):
+                    source = base / f"oversized-{relative.name}"
+                    source.mkdir()
+                    copy_runtime_checkout(source)
+                    shutil.copytree(ROOT / "scripts", source / "scripts")
+                    (source / relative).write_text(
+                        "#" * (installer_module.MAX_STABLE_TOOL_SIZE + 1)
+                    )
+
+                    with self.assertRaisesRegex(RuntimeLayoutError, "size limit"):
+                        install_complete(source, root, launcher, Path(sys.executable))
+
+                    self.assertEqual(
+                        {
+                            path: (
+                                path.read_bytes(),
+                                path.stat().st_mode & 0o777,
+                                (path.stat().st_dev, path.stat().st_ino),
+                            )
+                            for path in (activation, control, dispatcher, launcher)
+                        },
+                        before,
+                    )
+                    self.assertEqual(
+                        {path.name for path in (root / "versions").iterdir()},
+                        releases_before,
+                    )
+
     def test_symlinked_stable_directory_is_rejected_before_activation(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -1225,6 +1294,285 @@ class RuntimeInstallerTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(running.returncode, 0, running.stderr)
+
+    def test_upgrade_failure_restores_stable_tools_and_legacy_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "runtime"
+            source = base / "second-source"
+            launcher = base / "bin" / "llm-hud"
+            root.mkdir()
+            source.mkdir()
+            owned_root(root)
+            install_complete(ROOT, root, launcher, Path(sys.executable))
+            control = root / installer_module.CONTROL_DESTINATION
+            dispatcher = root / installer_module.DISPATCHER_DESTINATION
+            stable_state = root / installer_module.STABLE_STATE_NAME
+            stable_state.write_text('{"schema": 1}\n')
+            stable_state.chmod(0o640)
+            before = {
+                path: (path.read_bytes(), path.stat().st_mode & 0o777)
+                for path in (control, dispatcher, stable_state)
+            }
+            copy_runtime_checkout(source)
+            shutil.copytree(ROOT / "scripts", source / "scripts")
+            (source / "README.md").write_text("a distinct healthy release\n")
+            with (source / installer_module.CONTROL_SOURCE).open("a") as handle:
+                handle.write("\n# next stable control\n")
+            with (source / installer_module.DISPATCHER_SOURCE).open("a") as handle:
+                handle.write("\n# next stable dispatcher\n")
+
+            with mock.patch(
+                "llm_hud.installer._smoke_test_dispatcher",
+                side_effect=RuntimeLayoutError("simulated post-tools failure"),
+            ):
+                with self.assertRaisesRegex(RuntimeLayoutError, "simulated"):
+                    install_complete(source, root, launcher, Path(sys.executable))
+
+            self.assertEqual(
+                {
+                    path: (path.read_bytes(), path.stat().st_mode & 0o777)
+                    for path in (control, dispatcher, stable_state)
+                },
+                before,
+            )
+            running = subprocess.run(
+                [sys.executable, str(dispatcher), "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            self.assertEqual(running.returncode, 0, running.stderr)
+            self.assertEqual(running.stdout.strip(), f"llm-hud {__version__}")
+
+    def test_legacy_state_is_restored_when_sync_fails_after_unlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            owned_root(root)
+            install_versioned_runtime(ROOT, root)
+            stable_state = root / installer_module.STABLE_STATE_NAME
+            stable_state.write_text('{"schema": 1, "legacy": true}\n')
+            stable_state.chmod(0o640)
+            state_before = (
+                stable_state.read_bytes(),
+                stable_state.stat().st_mode & 0o777,
+            )
+            activation_before = (root / "activation").read_bytes()
+            sync_directory = installer_module.fsync_directory
+            canonical_root = root.resolve(strict=True)
+
+            def fail_after_legacy_unlink(path: Path) -> None:
+                if Path(path) == canonical_root and not stable_state.exists():
+                    raise OSError("simulated legacy state sync failure")
+                sync_directory(path)
+
+            with mock.patch(
+                "llm_hud.installer.fsync_directory",
+                side_effect=fail_after_legacy_unlink,
+            ):
+                with self.assertRaisesRegex(RuntimeLayoutError, "simulated"):
+                    install_versioned_runtime(ROOT, root)
+
+            self.assertEqual(
+                (
+                    stable_state.read_bytes(),
+                    stable_state.stat().st_mode & 0o777,
+                ),
+                state_before,
+            )
+            self.assertEqual((root / "activation").read_bytes(), activation_before)
+
+    def test_first_install_failure_removes_new_stable_tools(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "runtime"
+            launcher = base / "bin" / "llm-hud"
+            root.mkdir()
+            owned_root(root)
+
+            with mock.patch(
+                "llm_hud.installer._smoke_test_dispatcher",
+                side_effect=RuntimeLayoutError("simulated post-tools failure"),
+            ):
+                with self.assertRaisesRegex(RuntimeLayoutError, "simulated"):
+                    install_complete(ROOT, root, launcher, Path(sys.executable))
+
+            self.assertFalse((root / installer_module.CONTROL_DESTINATION).exists())
+            self.assertFalse((root / installer_module.DISPATCHER_DESTINATION).exists())
+            self.assertFalse((root / installer_module.STABLE_STATE_NAME).exists())
+            self.assertFalse((root / installer_module.LAUNCHER_STATE_NAME).exists())
+            self.assertFalse(launcher.exists())
+            self.assertIsNone(read_activation(root))
+
+    def test_partial_stable_tools_write_is_rolled_back(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "runtime"
+            source = base / "second-source"
+            launcher = base / "bin" / "llm-hud"
+            root.mkdir()
+            source.mkdir()
+            owned_root(root)
+            install_complete(ROOT, root, launcher, Path(sys.executable))
+            control = root / installer_module.CONTROL_DESTINATION
+            dispatcher = root / installer_module.DISPATCHER_DESTINATION
+            before = {
+                path: (path.read_bytes(), path.stat().st_mode & 0o777)
+                for path in (control, dispatcher)
+            }
+            copy_runtime_checkout(source)
+            shutil.copytree(ROOT / "scripts", source / "scripts")
+            (source / "README.md").write_text("a distinct healthy release\n")
+            control.write_text("# stale control\n")
+            dispatcher.write_text("# stale dispatcher\n")
+            before = {
+                path: (path.read_bytes(), path.stat().st_mode & 0o777)
+                for path in (control, dispatcher)
+            }
+            write_bytes = installer_module._atomic_replace_bytes
+
+            def fail_dispatcher(path: Path, *args, **kwargs):
+                if Path(path).name == installer_module.DISPATCHER_DESTINATION.name:
+                    raise OSError("simulated dispatcher write failure")
+                return write_bytes(path, *args, **kwargs)
+
+            with mock.patch(
+                "llm_hud.installer._atomic_replace_bytes",
+                side_effect=fail_dispatcher,
+            ):
+                with self.assertRaisesRegex(RuntimeLayoutError, "simulated"):
+                    install_complete(source, root, launcher, Path(sys.executable))
+
+            self.assertEqual(
+                {
+                    path: (path.read_bytes(), path.stat().st_mode & 0o777)
+                    for path in (control, dispatcher)
+                },
+                before,
+            )
+
+    def test_stable_tools_are_restored_when_dispatcher_write_lands_then_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "runtime"
+            source = base / "second-source"
+            launcher = base / "bin" / "llm-hud"
+            root.mkdir()
+            source.mkdir()
+            owned_root(root)
+            install_complete(ROOT, root, launcher, Path(sys.executable))
+            control = root / installer_module.CONTROL_DESTINATION
+            dispatcher = root / installer_module.DISPATCHER_DESTINATION
+            activation = root / "activation"
+            launcher_state = root / installer_module.LAUNCHER_STATE_NAME
+            stable_before = {
+                path: (path.read_bytes(), path.stat().st_mode & 0o777)
+                for path in (control, dispatcher)
+            }
+            activation_before = (
+                activation.read_bytes(),
+                activation.stat().st_mode & 0o777,
+            )
+            launcher_before = {
+                path: (
+                    path.read_bytes(),
+                    path.stat().st_mode & 0o777,
+                    (path.stat().st_dev, path.stat().st_ino),
+                )
+                for path in (launcher, launcher_state)
+            }
+            copy_runtime_checkout(source)
+            shutil.copytree(ROOT / "scripts", source / "scripts")
+            (source / "README.md").write_text("a distinct healthy release\n")
+            with (source / installer_module.CONTROL_SOURCE).open("a") as handle:
+                handle.write("\n# next stable control\n")
+            with (source / installer_module.DISPATCHER_SOURCE).open("a") as handle:
+                handle.write("\n# next stable dispatcher\n")
+            write_bytes = installer_module._atomic_replace_bytes
+            injected = False
+
+            def write_dispatcher_then_fail(path: Path, *args, **kwargs):
+                nonlocal injected
+                result = write_bytes(path, *args, **kwargs)
+                if (
+                    not injected
+                    and Path(path).name
+                    == installer_module.DISPATCHER_DESTINATION.name
+                ):
+                    injected = True
+                    raise OSError("simulated post-dispatcher-write failure")
+                return result
+
+            with mock.patch(
+                "llm_hud.installer._atomic_replace_bytes",
+                side_effect=write_dispatcher_then_fail,
+            ):
+                with self.assertRaisesRegex(RuntimeLayoutError, "simulated"):
+                    install_complete(source, root, launcher, Path(sys.executable))
+
+            self.assertTrue(injected)
+            self.assertEqual(
+                {
+                    path: (path.read_bytes(), path.stat().st_mode & 0o777)
+                    for path in (control, dispatcher)
+                },
+                stable_before,
+            )
+            self.assertEqual(
+                (
+                    activation.read_bytes(),
+                    activation.stat().st_mode & 0o777,
+                ),
+                activation_before,
+            )
+            self.assertEqual(
+                {
+                    path: (
+                        path.read_bytes(),
+                        path.stat().st_mode & 0o777,
+                        (path.stat().st_dev, path.stat().st_ino),
+                    )
+                    for path in (launcher, launcher_state)
+                },
+                launcher_before,
+            )
+
+    def test_first_stable_tools_write_failure_preserves_existing_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "runtime"
+            source = base / "second-source"
+            launcher = base / "bin" / "llm-hud"
+            root.mkdir()
+            source.mkdir()
+            owned_root(root)
+            install_complete(ROOT, root, launcher, Path(sys.executable))
+            control = root / installer_module.CONTROL_DESTINATION
+            dispatcher = root / installer_module.DISPATCHER_DESTINATION
+            control.write_text("# stale control\n")
+            dispatcher.write_text("# stale dispatcher\n")
+            before = (control.read_bytes(), dispatcher.read_bytes())
+            copy_runtime_checkout(source)
+            shutil.copytree(ROOT / "scripts", source / "scripts")
+            (source / "README.md").write_text("a distinct healthy release\n")
+            write_bytes = installer_module._atomic_replace_bytes
+
+            def fail_control(path: Path, *args, **kwargs):
+                if Path(path).name == installer_module.CONTROL_DESTINATION.name:
+                    raise OSError("simulated control write failure")
+                return write_bytes(path, *args, **kwargs)
+
+            with mock.patch(
+                "llm_hud.installer._atomic_replace_bytes",
+                side_effect=fail_control,
+            ):
+                with self.assertRaisesRegex(RuntimeLayoutError, "simulated"):
+                    install_complete(source, root, launcher, Path(sys.executable))
+
+            self.assertEqual((control.read_bytes(), dispatcher.read_bytes()), before)
 
     def test_post_activation_failure_holds_the_lock_against_an_aba_update(self):
         with tempfile.TemporaryDirectory() as directory:

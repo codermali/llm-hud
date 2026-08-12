@@ -66,6 +66,11 @@ jobs:
           tests.test_installer_module.RuntimeInstallerTests.test_post_activation_failure_holds_the_lock_against_an_aba_update
           tests.test_installer_module.RuntimeInstallerTests.test_first_install_failure_holds_the_lock_until_activation_is_cleared
           tests.test_installer_module.RuntimeInstallerTests.test_stable_tools_install_reuses_the_preflighted_snapshot
+          tests.test_installer_module.RuntimeInstallerTests.test_oversized_stable_tools_are_rejected_before_any_install_write
+          tests.test_installer_module.RuntimeInstallerTests.test_first_install_failure_removes_new_stable_tools
+          tests.test_installer_module.RuntimeInstallerTests.test_partial_stable_tools_write_is_rolled_back
+          tests.test_installer_module.RuntimeInstallerTests.test_upgrade_failure_restores_stable_tools_and_legacy_state
+          tests.test_installer_module.RuntimeInstallerTests.test_stable_tools_are_restored_when_dispatcher_write_lands_then_fails
       - run: python bin/llm-hud --version
 
   old-python-guard:

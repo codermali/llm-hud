@@ -59,6 +59,7 @@ CONTROL_DESTINATION = Path("control") / "runtime_control.py"
 DISPATCHER_DESTINATION = Path("bin") / "llm-hud"
 MANAGED_LAUNCHER_MARKER = "# llm-hud-managed-launcher-v1"
 MAX_LAUNCHER_SIZE = 64 * 1024
+MAX_STABLE_TOOL_SIZE = 64 * 1024
 LAUNCHER_TEMP_PREFIX = ".llm-hud-launcher-"
 
 
@@ -75,6 +76,13 @@ class _FileSnapshot:
     content: bytes | None
     identity: tuple[int, int] | None
     mode: int | None
+
+
+@dataclass(frozen=True)
+class _StableToolsSnapshot:
+    control: _FileSnapshot
+    dispatcher: _FileSnapshot
+    stable_state: _FileSnapshot
 
 
 def _metadata(path: Path, description: str) -> os.stat_result:
@@ -434,7 +442,10 @@ def _validate_stable_tools(tools: StableTools) -> StableTools:
     ):
         if not isinstance(text, str):
             raise RuntimeLayoutError(f"invalid {description}: expected text")
-        actual_sha256 = _sha256(text.encode("utf-8"))
+        encoded = text.encode("utf-8")
+        if len(encoded) > MAX_STABLE_TOOL_SIZE:
+            raise RuntimeLayoutError(f"invalid {description}: exceeds size limit")
+        actual_sha256 = _sha256(encoded)
         if declared_sha256 != actual_sha256:
             raise RuntimeLayoutError(f"invalid {description}: SHA256 mismatch")
         try:
@@ -442,6 +453,18 @@ def _validate_stable_tools(tools: StableTools) -> StableTools:
         except (SyntaxError, ValueError) as error:
             raise RuntimeLayoutError(f"invalid {description}: {error}") from error
     return tools
+
+
+def _stable_tool_matches(
+    snapshot: _FileSnapshot,
+    expected_sha256: str,
+    expected_mode: int,
+) -> bool:
+    return (
+        snapshot.content is not None
+        and _sha256(snapshot.content) == expected_sha256
+        and (os.name == "nt" or snapshot.mode == expected_mode)
+    )
 
 
 def load_stable_tools(source: Path) -> StableTools:
@@ -459,16 +482,6 @@ def load_stable_tools(source: Path) -> StableTools:
             control_sha256=_sha256(control.encode("utf-8")),
         )
     )
-
-
-def _existing_file_sha256(path: Path, description: str) -> str | None:
-    try:
-        path.lstat()
-    except FileNotFoundError:
-        return None
-    except OSError as error:
-        raise RuntimeLayoutError(f"cannot inspect {description} {path}: {error}") from error
-    return _sha256(_read_regular_bytes(path, description))
 
 
 def _require_regular_directory(path: Path, description: str) -> None:
@@ -500,38 +513,119 @@ def _sweep_tool_temps(directory: Path, name: str) -> None:
                 pass
 
 
+def _snapshot_stable_tools(root: Path) -> _StableToolsSnapshot:
+    return _StableToolsSnapshot(
+        control=_snapshot_regular_file(
+            root / CONTROL_DESTINATION,
+            "installed stable runtime control",
+        ),
+        dispatcher=_snapshot_regular_file(
+            root / DISPATCHER_DESTINATION,
+            "installed stable dispatcher",
+        ),
+        stable_state=_snapshot_regular_file(
+            root / STABLE_STATE_NAME,
+            "legacy stable state",
+        ),
+    )
+
+
 def _install_stable_tools_unlocked(
     root: Path,
     tools: StableTools,
-) -> None:
+) -> tuple[_StableToolsSnapshot, _StableToolsSnapshot]:
     _require_regular_directory(root / "bin", "stable bin directory")
     _require_regular_directory(root / "control", "stable control directory")
+    before = _snapshot_stable_tools(root)
+    control_path = root / CONTROL_DESTINATION
+    dispatcher_path = root / DISPATCHER_DESTINATION
+    stable_state_path = root / STABLE_STATE_NAME
+    control_installation: list[_FileSnapshot] = []
+    dispatcher_installation: list[_FileSnapshot] = []
+    stable_state_removed = False
+    after = before
     try:
-        control_path = root / CONTROL_DESTINATION
-        dispatcher_path = root / DISPATCHER_DESTINATION
         _sweep_tool_temps(control_path.parent, CONTROL_DESTINATION.name)
         _sweep_tool_temps(dispatcher_path.parent, DISPATCHER_DESTINATION.name)
-        if _existing_file_sha256(control_path, "installed stable runtime control") \
-            != tools.control_sha256:
-            atomic_write_text(
+        if not _stable_tool_matches(before.control, tools.control_sha256, 0o600):
+            _atomic_replace_bytes(
                 control_path,
-                tools.control,
+                tools.control.encode("utf-8"),
                 mode=0o600,
-                follow_symlinks=False,
+                temp_prefix=f".{CONTROL_DESTINATION.name}.",
+                expected=before.control,
+                description="installed stable runtime control",
+                installed_result=control_installation,
             )
-        if _existing_file_sha256(dispatcher_path, "installed stable dispatcher") \
-            != tools.dispatcher_sha256:
-            atomic_write_text(
+        if not _stable_tool_matches(
+            before.dispatcher,
+            tools.dispatcher_sha256,
+            0o700,
+        ):
+            _atomic_replace_bytes(
                 dispatcher_path,
-                tools.dispatcher,
+                tools.dispatcher.encode("utf-8"),
                 mode=0o700,
-                follow_symlinks=False,
+                temp_prefix=f".{DISPATCHER_DESTINATION.name}.",
+                expected=before.dispatcher,
+                description="installed stable dispatcher",
+                installed_result=dispatcher_installation,
             )
         # 0.1.x recorded the frozen protocol hashes here; the tools are now
         # simply refreshed with every install.
-        (root / STABLE_STATE_NAME).unlink(missing_ok=True)
-    except OSError as error:
-        raise RuntimeLayoutError(f"cannot install stable runtime tools: {error}") from error
+        if before.stable_state.content is not None:
+            _assert_unchanged_snapshot(
+                stable_state_path,
+                before.stable_state,
+                "legacy stable state",
+            )
+            stable_state_path.unlink()
+            stable_state_removed = True
+            fsync_directory(root)
+        after = _StableToolsSnapshot(
+            control=(
+                control_installation[-1]
+                if control_installation
+                else before.control
+            ),
+            dispatcher=(
+                dispatcher_installation[-1]
+                if dispatcher_installation
+                else before.dispatcher
+            ),
+            stable_state=_FileSnapshot(None, None, None),
+        )
+    except Exception as failure:
+        partial = _StableToolsSnapshot(
+            control=(
+                control_installation[-1]
+                if control_installation
+                else before.control
+            ),
+            dispatcher=(
+                dispatcher_installation[-1]
+                if dispatcher_installation
+                else before.dispatcher
+            ),
+            stable_state=(
+                _FileSnapshot(None, None, None)
+                if stable_state_removed
+                else before.stable_state
+            ),
+        )
+        try:
+            _restore_stable_tools_unlocked(root, before, partial)
+        except RuntimeLayoutError as rollback_error:
+            raise RuntimeLayoutError(
+                f"cannot install stable runtime tools ({failure}); rollback incomplete: "
+                f"{rollback_error}"
+            ) from failure
+        if isinstance(failure, OSError):
+            raise RuntimeLayoutError(
+                f"cannot install stable runtime tools: {failure}"
+            ) from failure
+        raise
+    return before, after
 
 
 def install_stable_tools(
@@ -602,6 +696,47 @@ def _restore_file_snapshot(
         description=description,
         maximum_size=maximum_size,
     )
+
+
+def _restore_stable_tools_unlocked(
+    root: Path,
+    previous: _StableToolsSnapshot,
+    installed: _StableToolsSnapshot,
+) -> None:
+    rollback_errors: list[str] = []
+    for path, before, after, description in (
+        (
+            root / STABLE_STATE_NAME,
+            previous.stable_state,
+            installed.stable_state,
+            "legacy stable state",
+        ),
+        (
+            root / DISPATCHER_DESTINATION,
+            previous.dispatcher,
+            installed.dispatcher,
+            "installed stable dispatcher",
+        ),
+        (
+            root / CONTROL_DESTINATION,
+            previous.control,
+            installed.control,
+            "installed stable runtime control",
+        ),
+    ):
+        try:
+            _restore_file_snapshot(
+                path,
+                before,
+                after,
+                description,
+            )
+        except (OSError, RuntimeLayoutError) as error:
+            rollback_errors.append(str(error))
+    if rollback_errors:
+        raise RuntimeLayoutError(
+            "stable tools rollback incomplete: " + "; ".join(rollback_errors)
+        )
 
 
 def _write_launcher_state(
@@ -1370,9 +1505,26 @@ def _install_versioned_runtime(
     tools = load_stable_tools(source)
 
     def finish_install(resolved_root: Path, metadata: RuntimeMetadata) -> None:
-        _install_stable_tools_unlocked(resolved_root, tools)
-        if after_stable_tools is not None:
-            after_stable_tools(resolved_root, metadata)
+        previous_tools, installed_tools = _install_stable_tools_unlocked(
+            resolved_root,
+            tools,
+        )
+        try:
+            if after_stable_tools is not None:
+                after_stable_tools(resolved_root, metadata)
+        except Exception as failure:
+            try:
+                _restore_stable_tools_unlocked(
+                    resolved_root,
+                    previous_tools,
+                    installed_tools,
+                )
+            except RuntimeLayoutError as rollback_error:
+                raise RuntimeLayoutError(
+                    f"installation failed ({failure}); restoring the stable tools "
+                    f"also failed: {rollback_error}"
+                ) from failure
+            raise
 
     return _install_runtime_from_source(
         source,
