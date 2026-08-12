@@ -71,6 +71,32 @@ class SetArrayTests(unittest.TestCase):
         self.assertEqual(parsed["tui"]["layout"], [["left", "right"]])
         self.assertEqual(parsed["tui"]["status_line"], ["a"])
 
+    def test_replaces_root_dotted_assignment_in_place(self):
+        text = 'model = "gpt-5"\ntui.status_line = [\n  "old",\n]\ntui.notifications = true\n'
+        result = set_array(text, "tui", "status_line", ["new"])
+        self.assertIn('tui.status_line = ["new"]\n', result)
+        self.assertNotIn("[tui]", result)
+        parsed = tomllib.loads(result)
+        self.assertEqual(parsed["tui"]["status_line"], ["new"])
+        self.assertTrue(parsed["tui"]["notifications"])
+        self.assertEqual(parsed["model"], "gpt-5")
+
+    def test_extends_a_table_that_exists_only_in_dotted_form(self):
+        text = 'tui.notifications = true\nmodel = "gpt-5"\n'
+        result = set_array(text, "tui", "status_line", ["a"])
+        self.assertIn('tui.status_line = ["a"]\n', result)
+        self.assertNotIn("[tui]", result)
+        parsed = tomllib.loads(result)
+        self.assertEqual(parsed["tui"]["status_line"], ["a"])
+        self.assertTrue(parsed["tui"]["notifications"])
+
+    def test_dotted_lookalike_under_a_header_is_not_the_root_table(self):
+        text = '[server]\ntui.status_line = ["x"]\n'
+        result = set_array(text, "tui", "status_line", ["a"])
+        parsed = tomllib.loads(result)
+        self.assertEqual(parsed["server"]["tui"]["status_line"], ["x"])
+        self.assertEqual(parsed["tui"]["status_line"], ["a"])
+
     def test_crlf_line_endings_are_preserved(self):
         result = set_array('[tui]\r\nstatus_line = ["a"]\r\nx = 1\r\n', "tui", "status_line", ["b"])
         self.assertNotIn("\n", result.replace("\r\n", ""))
@@ -95,6 +121,12 @@ class RemoveKeyTests(unittest.TestCase):
         self.assertEqual(parsed["tui"]["banner"], 'status_line = ["decoy"]\n')
         self.assertNotIn("status_line", parsed["tui"])
         self.assertEqual(parsed["tui"]["x"], 1)
+
+    def test_removes_root_dotted_assignment(self):
+        text = 'tui.status_line = ["a"]\ntui.notifications = true\n'
+        parsed = tomllib.loads(remove_key(text, "tui", "status_line"))
+        self.assertNotIn("status_line", parsed["tui"])
+        self.assertTrue(parsed["tui"]["notifications"])
 
 
 if __name__ == "__main__":

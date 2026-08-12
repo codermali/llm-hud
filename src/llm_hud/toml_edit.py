@@ -6,9 +6,13 @@ like TOML syntax inside a multiline string or array is left alone. Every edit is
 re-parsed and compared against the whole original document, so an edit that
 changes anything beyond the requested key fails instead of reaching disk.
 
-Limitation: quoted table names (["a.b"]) are not recognized; such a table is
-treated as absent, which surfaces as a duplicate-table parse error rather than a
-silent write to the wrong place.
+Tables may exist either as a bracketed header ([tui]) or as root-level dotted
+assignments (tui.status_line = [...]); edits keep whichever style the document
+already uses.
+
+Limitation: quoted names (["a.b"] headers or "tui".status_line assignments) are
+not recognized; such a table is treated as absent, which surfaces as a
+duplicate-table parse error rather than a silent write to the wrong place.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ class Assignment:
     start: int
     end: int
     indent: str
+    dotted: bool = False
 
 
 def _statement_starts(lines: list[str]) -> list[bool]:
@@ -126,6 +131,50 @@ def _find_assignment(
     return None
 
 
+def _root_dotted_assignment(
+    lines: list[str], starts: list[bool], table: str, key: str
+) -> Assignment | None:
+    """Find a root-level dotted assignment such as `table.key = value`.
+
+    Only statements before the first table header qualify: the same text under
+    a [section] header would belong to that section, not to `table`.
+    """
+    pattern = re.compile(rf"^(\s*){re.escape(table)}\.{re.escape(key)}\s*=")
+    for index, line in enumerate(lines):
+        if not starts[index]:
+            continue
+        if _is_table_header(line):
+            return None
+        match = pattern.match(line)
+        if not match:
+            continue
+        end = index + 1
+        while end < len(lines) and not starts[end]:
+            end += 1
+        return Assignment(index, end, match.group(1), dotted=True)
+    return None
+
+
+def _root_dotted_table_end(
+    lines: list[str], starts: list[bool], table: str
+) -> int | None:
+    """Index just past the last root-level `table.* = ...` assignment."""
+    pattern = re.compile(rf"^\s*{re.escape(table)}\.\S+\s*=")
+    last_end: int | None = None
+    for index, line in enumerate(lines):
+        if not starts[index]:
+            continue
+        if _is_table_header(line):
+            break
+        if not pattern.match(line):
+            continue
+        end = index + 1
+        while end < len(lines) and not starts[end]:
+            end += 1
+        last_end = end
+    return last_end
+
+
 def _newline(lines: list[str]) -> str:
     return "\r\n" if any(line.endswith("\r\n") for line in lines) else "\n"
 
@@ -161,13 +210,19 @@ def set_array(text: str, table: str, key: str, values: list[str]) -> str:
     lines = text.splitlines(keepends=True)
     starts = _statement_starts(lines)
     newline = _newline(lines)
-    assignment = _find_assignment(lines, starts, table, key)
+    assignment = _find_assignment(lines, starts, table, key) or _root_dotted_assignment(
+        lines, starts, table, key
+    )
     if assignment:
+        name = f"{table}.{key}" if assignment.dotted else key
         lines[assignment.start : assignment.end] = [
-            _format_array(key, values, assignment.indent, newline)
+            _format_array(name, values, assignment.indent, newline)
         ]
     else:
         bounds = _table_bounds(lines, starts, table)
+        dotted_end = (
+            None if bounds else _root_dotted_table_end(lines, starts, table)
+        )
         if bounds:
             start, end = bounds
             while end > start + 1 and not lines[end - 1].strip():
@@ -175,6 +230,14 @@ def set_array(text: str, table: str, key: str, values: list[str]) -> str:
             if end and not lines[end - 1].endswith(("\n", "\r")):
                 lines[end - 1] += newline
             lines.insert(end, _format_array(key, values, newline=newline))
+        elif dotted_end is not None:
+            # The table exists only as root-level dotted assignments; adding a
+            # [table] header would redefine it, so extend the dotted block.
+            if dotted_end and not lines[dotted_end - 1].endswith(("\n", "\r")):
+                lines[dotted_end - 1] += newline
+            lines.insert(
+                dotted_end, _format_array(f"{table}.{key}", values, newline=newline)
+            )
         else:
             if lines and not lines[-1].endswith(("\n", "\r")):
                 lines[-1] += newline
@@ -189,7 +252,9 @@ def set_array(text: str, table: str, key: str, values: list[str]) -> str:
 def remove_key(text: str, table: str, key: str) -> str:
     lines = text.splitlines(keepends=True)
     starts = _statement_starts(lines)
-    assignment = _find_assignment(lines, starts, table, key)
+    assignment = _find_assignment(lines, starts, table, key) or _root_dotted_assignment(
+        lines, starts, table, key
+    )
     if not assignment:
         return text
     del lines[assignment.start : assignment.end]

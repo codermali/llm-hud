@@ -43,6 +43,24 @@ class CodexProviderTests(unittest.TestCase):
                 )
                 self.assertIn('model = "gpt-5.5"', config.read_text())
 
+    def test_configures_a_dotted_form_config_without_rewriting_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            config.write_text('tui.status_line = ["model"]\nmodel = "gpt-5"\n')
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = CodexProvider()
+                self.assertEqual(provider.install("ignored").status, "installed")
+                self.assertNotIn("[tui]", config.read_text())
+                self.assertEqual(status_line(config), [*HUD_ITEMS, "model"])
+                self.assertEqual(provider.uninstall().status, "uninstalled")
+
+            self.assertEqual(status_line(config), ["model"])
+            self.assertIn('model = "gpt-5"', config.read_text())
+
     def test_restores_unset_status_line_to_codex_default(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
