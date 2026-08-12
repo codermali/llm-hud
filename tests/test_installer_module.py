@@ -269,19 +269,6 @@ class RuntimeInstallerTests(unittest.TestCase):
                 f"{INSTALL_MARKER_VALUE}\n",
             )
 
-    def test_legacy_launcher_uses_the_historical_byte_format(self):
-        content = installer_module._legacy_launcher_content(
-            Path("/opt/Python's/bin/python"),
-            Path("/tmp/LLM HUD's/bin/llm-hud"),
-        )
-
-        self.assertEqual(
-            content,
-            "#!/bin/sh\n"
-            "exec '/opt/Python'\\''s/bin/python' "
-            "'/tmp/LLM HUD'\\''s/bin/llm-hud' \"$@\"\n",
-        )
-
     def test_complete_install_writes_and_runs_the_external_launcher(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -304,7 +291,10 @@ class RuntimeInstallerTests(unittest.TestCase):
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertEqual(completed.stdout.strip(), f"llm-hud {metadata.version}")
-            self.assertTrue((root / ".llm-hud-launcher-state.json").is_file())
+            pointer = json.loads(
+                (root / ".llm-hud-launcher-state.json").read_text()
+            )
+            self.assertEqual(pointer["launcher_path"], str(launcher.resolve()))
 
     def test_foreign_external_launcher_types_are_never_replaced(self):
         for kind in ("file", "directory", "symlink", "hardlink"):
@@ -337,7 +327,7 @@ class RuntimeInstallerTests(unittest.TestCase):
                 else:
                     self.assertEqual(external.read_text(), "keep")
 
-    def test_exact_legacy_external_launcher_is_migrated(self):
+    def test_legacy_two_line_launcher_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             root = base / "runtime"
@@ -345,15 +335,18 @@ class RuntimeInstallerTests(unittest.TestCase):
             root.mkdir()
             launcher.parent.mkdir()
             owned_root(root)
-            legacy = installer_module._legacy_launcher_content(
-                Path(sys.executable), root.resolve() / "bin" / "llm-hud"
+            legacy = (
+                "#!/bin/sh\n"
+                f"exec '{sys.executable}' "
+                f"'{root.resolve() / 'bin' / 'llm-hud'}' \"$@\"\n"
             )
             launcher.write_text(legacy)
             launcher.chmod(0o755)
 
-            install_complete(ROOT, root, launcher, Path(sys.executable))
+            with self.assertRaisesRegex(RuntimeLayoutError, "unmanaged launcher"):
+                install_complete(ROOT, root, launcher, Path(sys.executable))
 
-            self.assertIn("llm-hud-managed-launcher-v1", launcher.read_text())
+            self.assertEqual(launcher.read_text(), legacy)
 
     def test_modified_external_launcher_blocks_reinstall_before_activation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -366,7 +359,7 @@ class RuntimeInstallerTests(unittest.TestCase):
             launcher.write_text("user changed this")
             activation_before = (root / "activation").read_bytes()
 
-            with self.assertRaisesRegex(RuntimeLayoutError, "modified"):
+            with self.assertRaisesRegex(RuntimeLayoutError, "unmanaged launcher"):
                 install_complete(ROOT, root, launcher, Path(sys.executable))
 
             self.assertEqual(launcher.read_text(), "user changed this")
@@ -397,7 +390,7 @@ class RuntimeInstallerTests(unittest.TestCase):
                 0,
             )
 
-    def test_pending_launcher_state_recovers_old_and_new_content(self):
+    def test_stale_launcher_state_is_ignored_and_rewritten(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             root = base / "runtime"
@@ -406,89 +399,23 @@ class RuntimeInstallerTests(unittest.TestCase):
             owned_root(root)
             install_complete(ROOT, root, launcher, Path(sys.executable))
             state_path = root / ".llm-hud-launcher-state.json"
-            new_content = launcher.read_bytes()
-            new_hash = hashlib.sha256(new_content).hexdigest()
-            legacy = installer_module._legacy_launcher_content(
-                Path(sys.executable), root.resolve() / "bin" / "llm-hud"
-            ).encode()
-            old_hash = hashlib.sha256(legacy).hexdigest()
-            pending = {
-                "schema": 1,
-                "launcher_path": str(launcher.resolve()),
-                "current_sha256": old_hash,
-                "pending_sha256": new_hash,
-            }
-
-            launcher.write_bytes(legacy)
-            launcher.chmod(0o755)
-            state_path.write_text(json.dumps(pending))
-            install_complete(ROOT, root, launcher, Path(sys.executable))
-            self.assertEqual(launcher.read_bytes(), new_content)
-
-            pending["current_sha256"] = old_hash
-            state_path.write_text(json.dumps(pending))
-            install_complete(ROOT, root, launcher, Path(sys.executable))
-            self.assertEqual(launcher.read_bytes(), new_content)
-            final_state = json.loads(state_path.read_text())
-            self.assertEqual(final_state["current_sha256"], new_hash)
-            self.assertIsNone(final_state["pending_sha256"])
-
-    def test_pending_launcher_recovers_a_linked_temporary_file(self):
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            root = base / "runtime"
-            launcher = base / "bin" / "llm-hud"
-            root.mkdir()
-            owned_root(root)
-            install_complete(ROOT, root, launcher, Path(sys.executable))
-            state_path = root / ".llm-hud-launcher-state.json"
-            state = json.loads(state_path.read_text())
-            state["pending_sha256"] = state["current_sha256"]
-            state_path.write_text(json.dumps(state))
-            leftover = launcher.parent / ".llm-hud-launcher-interrupted"
-            os.link(launcher, leftover)
-            self.assertEqual(launcher.stat().st_nlink, 2)
-
-            install_complete(ROOT, root, launcher, Path(sys.executable))
-
-            self.assertFalse(leftover.exists())
-            self.assertEqual(launcher.stat().st_nlink, 1)
-            self.assertIsNone(
-                json.loads(state_path.read_text())["pending_sha256"]
+            # 0.1.x wrote extra bookkeeping fields; they no longer matter.
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "launcher_path": str(base / "other"),
+                        "current_sha256": "0" * 64,
+                        "pending_sha256": "1" * 64,
+                    }
+                )
             )
 
-    def test_unsafe_launcher_state_blocks_reinstall_without_touching_target(self):
-        for kind in ("future", "path", "symlink"):
-            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
-                base = Path(directory)
-                root = base / "runtime"
-                launcher = base / "bin" / "llm-hud"
-                root.mkdir()
-                owned_root(root)
-                install_complete(ROOT, root, launcher, Path(sys.executable))
-                state = root / ".llm-hud-launcher-state.json"
-                external = base / "external-state"
-                before = launcher.read_bytes()
-                if kind == "future":
-                    payload = json.loads(state.read_text())
-                    payload["schema"] = 2
-                    state.write_text(json.dumps(payload))
-                elif kind == "path":
-                    payload = json.loads(state.read_text())
-                    payload["launcher_path"] = str(base / "other")
-                    state.write_text(json.dumps(payload))
-                else:
-                    external.write_bytes(state.read_bytes())
-                    state.unlink()
-                    state.symlink_to(external)
+            install_complete(ROOT, root, launcher, Path(sys.executable))
 
-                with self.assertRaises(RuntimeLayoutError):
-                    install_complete(ROOT, root, launcher, Path(sys.executable))
-
-                self.assertEqual(launcher.read_bytes(), before)
-                if kind == "symlink":
-                    self.assertTrue(state.is_symlink())
-                    self.assertTrue(external.is_file())
+            pointer = json.loads(state_path.read_text())
+            self.assertEqual(pointer["launcher_path"], str(launcher.resolve()))
+            self.assertNotIn("current_sha256", pointer)
 
     def test_checkout_launcher_does_not_mark_or_modify_the_checkout(self):
         with tempfile.TemporaryDirectory() as directory:

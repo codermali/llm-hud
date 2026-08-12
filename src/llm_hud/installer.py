@@ -100,17 +100,6 @@ class StableTools:
     control_sha256: str
 
 
-@dataclass(frozen=True)
-class FileSnapshot:
-    content: bytes
-    device: int
-    inode: int
-
-    @property
-    def sha256(self) -> str:
-        return _sha256(self.content)
-
-
 def _metadata(path: Path, description: str) -> os.stat_result:
     try:
         return path.lstat()
@@ -264,250 +253,71 @@ def managed_launcher_content(python: Path, command: Path) -> str:
     )
 
 
-def _legacy_sh_quote(value: str) -> str:
-    return "'" + value.replace("'", "'\\''") + "'"
-
-
-def _legacy_launcher_content(python: Path, command: Path) -> str:
-    return (
-        "#!/bin/sh\n"
-        f"exec {_legacy_sh_quote(str(python))} "
-        f"{_legacy_sh_quote(str(command))} \"$@\"\n"
-    )
-
-
 def _known_launcher(content: bytes, command: Path) -> bool:
     try:
         text = content.decode("utf-8")
     except UnicodeError:
         return False
-    if any(character in text for character in ("\0", "\r")):
-        return False
     lines = text.splitlines(keepends=True)
-    if len(lines) not in (2, 3) or any(not line.endswith("\n") for line in lines):
+    if (
+        len(lines) != 3
+        or lines[0] != "#!/bin/sh\n"
+        or lines[1] != f"{MANAGED_LAUNCHER_MARKER}\n"
+    ):
         return False
-    if lines[0] != "#!/bin/sh\n":
-        return False
-    if len(lines) == 3:
-        if lines[1] != f"{MANAGED_LAUNCHER_MARKER}\n":
-            return False
-        command_line = lines[2]
-    else:
-        command_line = lines[1]
     try:
-        arguments = shlex.split(command_line, posix=True)
+        arguments = shlex.split(lines[2], posix=True)
     except ValueError:
         return False
-    if len(lines) == 3:
-        if (
-            len(arguments) != 6
-            or arguments[0] != "exec"
-            or arguments[2:4] != ["-I", "-B"]
-            or arguments[5] != "$@"
-        ):
-            return False
-        python = Path(arguments[1])
-        installed_command = Path(arguments[4])
-    else:
-        if len(arguments) != 4 or arguments[0] != "exec" or arguments[3] != "$@":
-            return False
-        python = Path(arguments[1])
-        installed_command = Path(arguments[2])
-    if not python.is_absolute() or installed_command != command:
+    if (
+        len(arguments) != 6
+        or arguments[0] != "exec"
+        or arguments[2:4] != ["-I", "-B"]
+        or arguments[5] != "$@"
+    ):
         return False
-    canonical = (
-        managed_launcher_content(python, command)
-        if len(lines) == 3
-        else _legacy_launcher_content(python, command)
-    )
-    return text == canonical
+    python = Path(arguments[1])
+    if not python.is_absolute() or Path(arguments[4]) != command:
+        return False
+    return text == managed_launcher_content(python, command)
 
 
-def _read_file_snapshot(
-    path: Path,
-    description: str,
-    *,
-    expected_links: int = 1,
-) -> FileSnapshot | None:
+def _read_launcher_content(path: Path) -> bytes | None:
+    """Read an existing external launcher; None when absent."""
     try:
-        before = path.lstat()
+        metadata = path.lstat()
     except FileNotFoundError:
         return None
     except OSError as error:
-        raise RuntimeLayoutError(f"cannot inspect {description} {path}: {error}") from error
-    if (
-        stat.S_ISLNK(before.st_mode)
-        or not stat.S_ISREG(before.st_mode)
-        or before.st_nlink != expected_links
-    ):
         raise RuntimeLayoutError(
-            f"{description} is not a single-link regular file: {path}"
-        )
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = -1
-    try:
-        descriptor = os.open(path, flags)
-        opened = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or opened.st_nlink != expected_links
-            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
-        ):
-            raise RuntimeLayoutError(f"{description} changed while opening: {path}")
-        content = os.read(descriptor, MAX_LAUNCHER_SIZE + 1)
-        if len(content) > MAX_LAUNCHER_SIZE:
-            raise RuntimeLayoutError(f"{description} is too large: {path}")
-        return FileSnapshot(content, opened.st_dev, opened.st_ino)
-    except OSError as error:
-        raise RuntimeLayoutError(f"cannot read {description} {path}: {error}") from error
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-
-
-def _read_launcher_state(root: Path) -> dict[str, object] | None:
-    path = root / LAUNCHER_STATE_NAME
-    snapshot = _read_file_snapshot(path, "launcher state")
-    if snapshot is None:
-        return None
-    try:
-        payload = json.loads(snapshot.content)
-    except (UnicodeError, json.JSONDecodeError) as error:
-        raise RuntimeLayoutError(f"invalid launcher state {path}: {error}") from error
-    expected = {
-        "schema",
-        "launcher_path",
-        "current_sha256",
-        "pending_sha256",
-    }
-    schema = payload.get("schema") if isinstance(payload, dict) else None
-    current = payload.get("current_sha256") if isinstance(payload, dict) else False
-    pending = payload.get("pending_sha256") if isinstance(payload, dict) else False
-    if (
-        not isinstance(payload, dict)
-        or set(payload) != expected
-        or isinstance(schema, bool)
-        or schema != LAUNCHER_STATE_SCHEMA
-        or not isinstance(payload.get("launcher_path"), str)
-        or not (current is None or _valid_sha256(current))
-        or not (pending is None or _valid_sha256(pending))
-    ):
-        raise RuntimeLayoutError(f"unsupported launcher state: {path}")
-    return payload
-
-
-def _recover_linked_launcher_temp(
-    launcher: Path,
-    state: dict[str, object],
-    command: Path,
-    candidate_sha256: str,
-    *,
-    recover: bool,
-) -> FileSnapshot | None:
-    if state["pending_sha256"] is None:
-        return None
-    try:
-        metadata = launcher.lstat()
-    except OSError:
-        return None
-    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 2:
-        return None
-    snapshot = _read_file_snapshot(
-        launcher,
-        "pending external launcher",
-        expected_links=2,
-    )
-    assert snapshot is not None
-    allowed = {
-        state["current_sha256"],
-        state["pending_sha256"],
-        candidate_sha256,
-    }
-    if snapshot.sha256 not in allowed or not _known_launcher(snapshot.content, command):
-        return None
-    matches: list[Path] = []
-    try:
-        entries = list(os.scandir(launcher.parent))
-    except OSError:
-        return None
-    for entry in entries:
-        if not entry.name.startswith(LAUNCHER_TEMP_PREFIX):
-            continue
-        path = Path(entry.path)
-        try:
-            candidate_metadata = path.lstat()
-        except OSError:
-            continue
-        if (
-            stat.S_ISREG(candidate_metadata.st_mode)
-            and candidate_metadata.st_nlink == 2
-            and (candidate_metadata.st_dev, candidate_metadata.st_ino)
-            == (snapshot.device, snapshot.inode)
-        ):
-            matches.append(path)
-    if len(matches) != 1:
-        return None
-    if not recover:
-        return snapshot
-    try:
-        matches[0].unlink()
-    except OSError as error:
-        raise RuntimeLayoutError(
-            f"cannot recover pending external launcher {launcher}: {error}"
+            f"cannot inspect external launcher {path}: {error}"
         ) from error
-    fsync_directory(launcher.parent)
-    return _read_file_snapshot(launcher, "recovered external launcher")
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise RuntimeLayoutError(f"external launcher is not a regular file: {path}")
+    if metadata.st_size > MAX_LAUNCHER_SIZE:
+        raise RuntimeLayoutError(f"external launcher is too large: {path}")
+    try:
+        return path.read_bytes()
+    except OSError as error:
+        raise RuntimeLayoutError(
+            f"cannot read external launcher {path}: {error}"
+        ) from error
 
 
-def _preflight_external_launcher(
-    root: Path,
-    launcher: Path,
-    candidate: bytes,
-    *,
-    recover_interrupted: bool = False,
-) -> FileSnapshot | None:
+def _preflight_external_launcher(root: Path, launcher: Path) -> None:
+    """Only absent launchers and our own managed form may be replaced."""
     root = root.resolve(strict=True)
     launcher = _canonical_file_path(launcher, "external launcher")
-    command = root / DISPATCHER_DESTINATION
     if launcher.is_relative_to(root):
         raise RuntimeLayoutError("external launcher must be outside the install root")
-    state = _read_launcher_state(root)
-    candidate_sha256 = _sha256(candidate)
-    if state is not None and state["launcher_path"] != str(launcher):
-        raise RuntimeLayoutError(
-            f"launcher state targets {state['launcher_path']}, not {launcher}"
-        )
-    linked_snapshot = None
-    if state is not None:
-        linked_snapshot = _recover_linked_launcher_temp(
-            launcher,
-            state,
-            command,
-            candidate_sha256,
-            recover=recover_interrupted,
-        )
-    snapshot = linked_snapshot or _read_file_snapshot(launcher, "external launcher")
-    if state is None:
-        if snapshot is not None and not _known_launcher(snapshot.content, command):
-            raise RuntimeLayoutError(f"refusing to replace unmanaged launcher: {launcher}")
-        return snapshot
-    if snapshot is None:
-        return None
-    allowed = {
-        state["current_sha256"],
-        state["pending_sha256"],
-        candidate_sha256,
-    }
-    if snapshot.sha256 not in allowed or not _known_launcher(snapshot.content, command):
-        raise RuntimeLayoutError(f"installed launcher was modified: {launcher}")
-    return snapshot
+    content = _read_launcher_content(launcher)
+    if content is not None and not _known_launcher(
+        content, root / DISPATCHER_DESTINATION
+    ):
+        raise RuntimeLayoutError(f"refusing to replace unmanaged launcher: {launcher}")
 
 
-def _write_launcher_file(
-    launcher: Path,
-    content: bytes,
-    expected: FileSnapshot | None,
-) -> None:
+def _write_launcher_file(launcher: Path, content: bytes) -> None:
     _require_regular_directory(launcher.parent, "external launcher directory")
     descriptor, temp_name = tempfile.mkstemp(
         prefix=LAUNCHER_TEMP_PREFIX,
@@ -520,19 +330,8 @@ def _write_launcher_file(
             os.fchmod(handle.fileno(), 0o755)
             handle.flush()
             os.fsync(handle.fileno())
-        current = _read_file_snapshot(launcher, "external launcher")
-        if current != expected:
-            raise RuntimeLayoutError("external launcher changed during installation")
         try:
-            if expected is None:
-                os.link(temp, launcher, follow_symlinks=False)
-                temp.unlink()
-            else:
-                os.replace(temp, launcher)
-        except FileExistsError as error:
-            raise RuntimeLayoutError(
-                f"external launcher appeared during installation: {launcher}"
-            ) from error
+            os.replace(temp, launcher)
         except OSError as error:
             raise RuntimeLayoutError(
                 f"cannot replace external launcher {launcher}: {error}"
@@ -876,7 +675,7 @@ def install_external_launcher(
     candidate = managed_launcher_content(
         python, root / DISPATCHER_DESTINATION
     ).encode("utf-8")
-    _preflight_external_launcher(root, launcher, candidate)
+    _preflight_external_launcher(root, launcher)
     with RuntimeLock(root):
         current = read_activation(root)
         actual_active = current.active if current is not None else None
@@ -884,32 +683,17 @@ def install_external_launcher(
             raise RuntimeLayoutError(
                 f"active runtime changed from {expected_active!r} to {actual_active!r}"
             )
-        snapshot = _preflight_external_launcher(
-            root,
-            launcher,
-            candidate,
-            recover_interrupted=True,
-        )
-        state_path = root / LAUNCHER_STATE_NAME
-        pending_state = {
-            "schema": LAUNCHER_STATE_SCHEMA,
-            "launcher_path": str(launcher),
-            "current_sha256": snapshot.sha256 if snapshot is not None else None,
-            "pending_sha256": _sha256(candidate),
-        }
+        _preflight_external_launcher(root, launcher)
         try:
+            _write_launcher_file(launcher, candidate)
+            # A plain pointer so a managed dispatch can find the PATH-visible
+            # launcher (cli._managed_launcher_path); 0.1.x files carried more
+            # fields, which readers ignore.
             atomic_write_json(
-                state_path,
-                pending_state,
-                follow_symlinks=False,
-            )
-            _write_launcher_file(launcher, candidate, snapshot)
-            atomic_write_json(
-                state_path,
+                root / LAUNCHER_STATE_NAME,
                 {
-                    **pending_state,
-                    "current_sha256": _sha256(candidate),
-                    "pending_sha256": None,
+                    "schema": LAUNCHER_STATE_SCHEMA,
+                    "launcher_path": str(launcher),
                 },
                 follow_symlinks=False,
             )
@@ -929,11 +713,10 @@ def install_checkout_launcher(launcher: Path, python: Path, command: Path) -> No
         ) from error
     if launcher.is_relative_to(checkout_root):
         raise RuntimeLayoutError("external launcher must be outside the source checkout")
-    candidate = managed_launcher_content(python, command).encode("utf-8")
-    snapshot = _read_file_snapshot(launcher, "external launcher")
-    if snapshot is not None and not _known_launcher(snapshot.content, command):
+    content = _read_launcher_content(launcher)
+    if content is not None and not _known_launcher(content, command):
         raise RuntimeLayoutError(f"refusing to replace unmanaged launcher: {launcher}")
-    _write_launcher_file(launcher, candidate, snapshot)
+    _write_launcher_file(launcher, managed_launcher_content(python, command).encode("utf-8"))
 
 
 def _validate_python_cache(path: Path) -> None:
@@ -1417,10 +1200,7 @@ def install_complete(
     root = Path(root)
     launcher = Path(launcher)
     python = Path(python)
-    candidate_launcher = managed_launcher_content(
-        python, root.resolve(strict=True) / DISPATCHER_DESTINATION
-    ).encode("utf-8")
-    _preflight_external_launcher(root, launcher, candidate_launcher)
+    _preflight_external_launcher(root, launcher)
     activation_before = _read_existing_activation(root)
     metadata, activation = install_versioned_runtime(
         source,
