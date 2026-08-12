@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from llm_hud._version import __version__
 from llm_hud.runtime import initialize_layout, read_activation, validate_runtime
 
 
@@ -263,7 +264,7 @@ class InstallerRootSafetyTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(version.returncode, 0, version.stderr)
-            self.assertEqual(version.stdout.strip(), "llm-hud 0.1.0")
+            self.assertEqual(version.stdout.strip(), f"llm-hud {__version__}")
 
             activation_before = (install_dir / "activation").read_bytes()
             versions_before = sorted(path.name for path in (install_dir / "versions").iterdir())

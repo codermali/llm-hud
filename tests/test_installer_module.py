@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 import llm_hud.installer as installer_module
+from llm_hud._version import __version__
 from llm_hud.installer import (
     LEGACY_FLAT_DISPATCHER_SHA256,
     STAGING_PREFIX,
@@ -489,7 +490,7 @@ class RuntimeInstallerTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
-            self.assertEqual(completed.stdout.strip(), "llm-hud 0.1.0")
+            self.assertEqual(completed.stdout.strip(), f"llm-hud {__version__}")
 
     def test_reinstall_does_not_rewrite_frozen_stable_v1_files(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -545,7 +546,7 @@ class RuntimeInstallerTests(unittest.TestCase):
             )
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
-            self.assertEqual(completed.stdout.strip(), "llm-hud 0.1.0")
+            self.assertEqual(completed.stdout.strip(), f"llm-hud {__version__}")
             self.assertFalse(sentinel.exists())
             self.assertTrue((root / ".llm-hud-stable.json").is_file())
 
@@ -845,7 +846,7 @@ class RuntimeInstallerTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(running.returncode, 0, running.stderr)
-            self.assertEqual(running.stdout.strip(), "llm-hud 0.1.0")
+            self.assertEqual(running.stdout.strip(), f"llm-hud {__version__}")
 
     def test_post_activation_failure_restores_the_previous_runtime(self):
         with tempfile.TemporaryDirectory() as directory:
