@@ -26,7 +26,8 @@ class AtomicWriteTests(unittest.TestCase):
             path.write_text("{}")
             os.chmod(path, 0o644)
             atomic_write_text(path, "{}\n")
-            self.assertEqual(file_mode(path), 0o644)
+            if os.name != "nt":
+                self.assertEqual(file_mode(path), 0o644)
 
     def test_atomic_rename_requests_a_parent_directory_sync(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -41,13 +42,15 @@ class AtomicWriteTests(unittest.TestCase):
             path.write_text("{}")
             os.chmod(path, 0o644)
             atomic_write_json(path, {"a": 1}, mode=None)
-            self.assertEqual(file_mode(path), 0o644)
+            if os.name != "nt":
+                self.assertEqual(file_mode(path), 0o644)
 
     def test_json_defaults_to_private_mode_for_new_files(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.json"
             atomic_write_json(path, {"a": 1})
-            self.assertEqual(file_mode(path), 0o600)
+            if os.name != "nt":
+                self.assertEqual(file_mode(path), 0o600)
 
     def test_text_follows_relative_symlink_without_replacing_it(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -65,7 +68,8 @@ class AtomicWriteTests(unittest.TestCase):
             self.assertTrue(link.is_symlink())
             self.assertEqual(link.readlink(), original_link)
             self.assertEqual(target.read_text(), "new")
-            self.assertEqual(file_mode(target), 0o640)
+            if os.name != "nt":
+                self.assertEqual(file_mode(target), 0o640)
 
     def test_text_follows_a_symlink_chain(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -124,6 +128,7 @@ class AtomicWriteTests(unittest.TestCase):
 
             self.assertTrue(link.is_symlink())
 
+    @unittest.skipIf(os.name == "nt", "Windows has no POSIX zero-mode equivalent")
     def test_zero_mode_is_preserved(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "private"

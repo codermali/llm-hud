@@ -325,7 +325,10 @@ class RuntimeSourceTests(unittest.TestCase):
             second = source_digest(root)
             self.assertNotEqual(first, second)
             os.chmod(root / "src" / "file", 0o755)
-            self.assertNotEqual(second, source_digest(root))
+            if os.name == "nt":
+                self.assertEqual(second, source_digest(root))
+            else:
+                self.assertNotEqual(second, source_digest(root))
 
     def test_finalize_rejects_staging_outside_the_owned_root(self):
         with tempfile.TemporaryDirectory() as directory:

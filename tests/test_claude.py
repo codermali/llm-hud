@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -163,7 +164,8 @@ class ClaudeProviderTests(unittest.TestCase):
                 LLM_HUD_STATE_DIR=str(root / "state"),
             ):
                 ClaudeProvider().install("/opt/llm-hud")
-                self.assertEqual(stat.S_IMODE(settings.stat().st_mode), 0o644)
+                if os.name != "nt":
+                    self.assertEqual(stat.S_IMODE(settings.stat().st_mode), 0o644)
 
     def test_install_shell_quotes_the_renderer_path(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -182,9 +184,16 @@ class ClaudeProviderTests(unittest.TestCase):
             self.assertEqual(result.status, "installed")
             configured = json.loads(settings.read_text())
             command = configured["statusLine"]["command"]
+            invocation: str | list[str] = command
+            use_shell = True
+            if os.name == "nt":
+                bash = shutil.which("bash")
+                self.assertIsNotNone(bash)
+                invocation = [bash or "bash", "-c", command]
+                use_shell = False
             completed = subprocess.run(
-                command,
-                shell=True,
+                invocation,
+                shell=use_shell,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -731,7 +740,8 @@ class ClaudeProviderTests(unittest.TestCase):
 
             self.assertTrue(settings.is_symlink())
             self.assertEqual(json.loads(target.read_text()), original)
-            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o640)
+            if os.name != "nt":
+                self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o640)
 
     def test_retargeted_settings_symlink_is_not_restored(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -823,8 +833,11 @@ class ClaudeProviderTests(unittest.TestCase):
                 provider.install(str(launcher))
                 os.chmod(launcher, 0o644)
                 configured, detail = provider.configured()
-                self.assertFalse(configured)
-                self.assertIn("not executable", detail)
+                if os.name == "nt":
+                    self.assertTrue(configured, detail)
+                else:
+                    self.assertFalse(configured)
+                    self.assertIn("not executable", detail)
 
                 launcher.unlink()
                 configured, detail = provider.configured()
@@ -843,7 +856,7 @@ class ClaudeProviderTests(unittest.TestCase):
                     {
                         "statusLine": {
                             "type": "command",
-                            "command": f"{launcher} render claude",
+                            "command": claude_module._status_line_command(str(launcher)),
                         }
                     }
                 )
