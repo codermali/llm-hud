@@ -33,7 +33,7 @@ def _selected(value: str, include_unavailable: bool = False):
 
 def _print_result(result) -> bool:
     print(f"[{result.status}] {result.provider}: {result.message}")
-    return result.status != "error"
+    return not result.failed
 
 
 def command_install(args: argparse.Namespace) -> int:
@@ -52,7 +52,8 @@ def command_install(args: argparse.Namespace) -> int:
 def command_uninstall(args: argparse.Namespace) -> int:
     ok = True
     for provider in _selected(args.provider, include_unavailable=True):
-        ok = _print_result(provider.uninstall()) and ok
+        result = provider.forget() if args.forget else provider.uninstall()
+        ok = _print_result(result) and ok
     return 0 if ok else 1
 
 
@@ -122,6 +123,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     uninstall = subparsers.add_parser("uninstall", help="restore agent HUD settings")
     uninstall.add_argument("--provider", choices=("all", *PROVIDER_IDS), default="all")
+    uninstall.add_argument(
+        "--forget",
+        action="store_true",
+        help="abandon saved installation state without touching configs",
+    )
     uninstall.set_defaults(handler=command_uninstall)
 
     doctor = subparsers.add_parser("doctor", help="check provider integrations")

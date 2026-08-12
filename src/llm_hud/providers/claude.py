@@ -23,6 +23,20 @@ from llm_hud.storage import (
 
 
 STATE_SCHEMAS = frozenset((1, 2))
+_CONFLICT_MESSAGE = (
+    "statusLine was customized after installation; left it untouched "
+    "(run llm-hud uninstall --forget to abandon the saved state)"
+)
+
+
+def _matches_original(settings: dict[str, Any], state: dict[str, Any]) -> bool:
+    """The live settings hold exactly the pre-installation statusLine."""
+    present = "statusLine" in settings
+    if present != bool(state.get("original_present")):
+        return False
+    return not present or settings.get("statusLine") == state.get(
+        "original_status_line"
+    )
 
 
 def _command_argv(command: object) -> tuple[str, str, str] | None:
@@ -273,12 +287,13 @@ class ClaudeProvider(Provider):
         if existing_state is not None:
             previous_installed = _installed_status_line_from_state(existing_state)
             assert previous_installed is not None
-            if current != previous_installed:
-                return Result(
-                    self.id,
-                    "skipped",
-                    "statusLine changed after installation; left it untouched",
-                )
+            if current != previous_installed and not _matches_original(
+                settings, existing_state
+            ):
+                return Result(self.id, "conflict", _CONFLICT_MESSAGE)
+            # current matches either the installed value (normal reconfigure)
+            # or the pre-install original (interrupted install or manual
+            # revert); both are safe to configure from the saved original.
             original_present = bool(existing_state.get("original_present"))
             original_status_line = existing_state.get("original_status_line")
         elif _is_llm_hud_command(current_command):
@@ -346,11 +361,17 @@ class ClaudeProvider(Provider):
         installed = _installed_status_line_from_state(state)
         assert installed is not None
         if current != installed:
-            return Result(
-                self.id,
-                "skipped",
-                "statusLine changed after installation; left it untouched",
-            )
+            if _matches_original(settings, state):
+                try:
+                    state_path.unlink(missing_ok=True)
+                except OSError as error:
+                    return Result(self.id, "error", str(error))
+                return Result(
+                    self.id,
+                    "uninstalled",
+                    "statusLine already restored; removed installation state",
+                )
+            return Result(self.id, "conflict", _CONFLICT_MESSAGE)
         if state.get("original_present"):
             settings["statusLine"] = state.get("original_status_line")
         else:

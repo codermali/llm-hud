@@ -5,12 +5,28 @@ import shutil
 from dataclasses import dataclass
 from typing import Literal
 
+from llm_hud.paths import provider_state_path
+
+
+RESULT_STATUSES = frozenset(
+    ("installed", "uninstalled", "skipped", "builtin", "conflict", "forgotten", "error")
+)
+
 
 @dataclass(frozen=True)
 class Result:
     provider: str
     status: str
     message: str
+
+    def __post_init__(self) -> None:
+        if self.status not in RESULT_STATUSES:
+            raise ValueError(f"unknown result status: {self.status}")
+
+    @property
+    def failed(self) -> bool:
+        """Statuses that must make the CLI exit non-zero."""
+        return self.status in ("error", "conflict")
 
 
 @dataclass(frozen=True)
@@ -40,6 +56,17 @@ class Provider:
 
     def uninstall(self) -> Result:
         raise NotImplementedError
+
+    def forget(self) -> Result:
+        """Abandon saved installation state without touching provider config."""
+        path = provider_state_path(self.id)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return Result(self.id, "skipped", "no installation state")
+        except OSError as error:
+            return Result(self.id, "error", str(error))
+        return Result(self.id, "forgotten", f"abandoned installation state {path}")
 
     def configured(self) -> tuple[bool, str]:
         raise NotImplementedError

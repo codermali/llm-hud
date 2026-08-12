@@ -102,13 +102,18 @@ llm-hud install --provider claude
 llm-hud install --provider codex
 llm-hud doctor
 llm-hud uninstall
+llm-hud uninstall --forget
 llm-hud rollback
 ```
 
 - `install` 可重复执行，不会重复添加相同配置。
 - `doctor` 检查工具是否已安装、集成是否已配置，以及启动器是否可执行。
 - `uninstall` 恢复接入前的提供方状态栏配置；它不会删除 LLM HUD 运行时。
-- 如果用户在安装后自行修改了相关配置，卸载会拒绝覆盖这些修改。
+- 如果用户在安装后自行修改了相关配置，`install` 和 `uninstall` 都会以
+  `conflict` 状态拒绝覆盖，并返回非零退出码。
+- 如果用户删除了 LLM HUD 的配置或手动恢复了原状，`install` 会直接重新配置，
+  `uninstall` 会清理遗留的安装状态。
+- `uninstall --forget` 只放弃保存的恢复记录，不改动任何提供方配置。
 
 ## 各工具的行为
 

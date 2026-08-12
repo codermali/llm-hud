@@ -27,6 +27,19 @@ HUD_ITEMS = [
 # Previously-managed items that installs must scrub from status_line; none now.
 OBSOLETE_ITEMS: list[str] = []
 STATE_SCHEMAS = frozenset((1,))
+_CONFLICT_MESSAGE = (
+    "status_line was customized after installation; left it untouched "
+    "(run llm-hud uninstall --forget to abandon the saved state)"
+)
+
+
+def _matches_original(
+    present: bool, items: list[str], state: dict[str, Any]
+) -> bool:
+    """The live config holds exactly the pre-installation status_line."""
+    return present == bool(state.get("original_present")) and items == state.get(
+        "original_items"
+    )
 
 
 def _load_config(*, target: Path | None = None) -> tuple[str, dict[str, Any]]:
@@ -107,12 +120,14 @@ class CodexProvider(Provider):
             return Result(self.id, "error", str(error))
         if existing_state is not None:
             restored = _restore_items(current, existing_state)
+            if restored is None and _matches_original(
+                current_present, current, existing_state
+            ):
+                # Interrupted install or manual revert: the config is exactly
+                # the pre-install state, so configuring it again is safe.
+                restored = list(existing_state["original_items"])
             if restored is None:
-                return Result(
-                    self.id,
-                    "skipped",
-                    "status_line changed after installation; left it untouched",
-                )
+                return Result(self.id, "conflict", _CONFLICT_MESSAGE)
             original_present = bool(existing_state.get("original_present"))
             original_items = restored
         else:
@@ -170,11 +185,14 @@ class CodexProvider(Provider):
 
         restored = _restore_items(current, state)
         if restored is None:
-            return Result(
-                self.id,
-                "skipped",
-                "status_line changed after installation; left it untouched",
-            )
+            if _matches_original(present, current, state):
+                state_path.unlink(missing_ok=True)
+                return Result(
+                    self.id,
+                    "uninstalled",
+                    "status_line already restored; removed installation state",
+                )
+            return Result(self.id, "conflict", _CONFLICT_MESSAGE)
         try:
             if not state.get("original_present") and not restored:
                 updated = remove_key(text, "tui", "status_line")

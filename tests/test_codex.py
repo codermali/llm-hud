@@ -175,9 +175,31 @@ class CodexProviderTests(unittest.TestCase):
 
                 result = provider.install("ignored")
 
-            self.assertEqual(result.status, "skipped")
+            self.assertEqual(result.status, "conflict")
             self.assertEqual(status_line(config), changed)
             self.assertEqual(state_path.read_bytes(), state_before)
+
+    def test_reverted_status_line_heals_on_reinstall_and_uninstall(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            original = '[tui]\nstatus_line = ["current-dir"]\n'
+            config.write_text(original)
+            state_path = root / "state" / "providers" / "codex.json"
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = CodexProvider()
+                provider.install("ignored")
+                config.write_text(original)  # the user reverted our edit
+                self.assertEqual(provider.install("ignored").status, "installed")
+                self.assertEqual(status_line(config), HUD_ITEMS)
+
+                config.write_text(original)  # reverted again
+                self.assertEqual(provider.uninstall().status, "uninstalled")
+                self.assertFalse(state_path.exists())
+                self.assertEqual(config.read_text(), original)
 
     def test_unwritable_table_reports_error_without_touching_the_file(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -207,7 +229,8 @@ class CodexProviderTests(unittest.TestCase):
                 changed = [item for item in status_line(config) if item != "weekly-limit"]
                 config.write_text(set_array(config.read_text(), "tui", "status_line", changed))
                 result = provider.uninstall()
-                self.assertEqual(result.status, "skipped")
+                self.assertEqual(result.status, "conflict")
+                self.assertIn("--forget", result.message)
                 self.assertEqual(status_line(config), changed)
 
     def test_future_state_schema_blocks_install_without_touching_config(self):

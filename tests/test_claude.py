@@ -206,7 +206,8 @@ class ClaudeProviderTests(unittest.TestCase):
                 payload["statusLine"]["command"] = "my-new-footer"
                 settings.write_text(json.dumps(payload))
                 result = provider.uninstall()
-                self.assertEqual(result.status, "skipped")
+                self.assertEqual(result.status, "conflict")
+                self.assertIn("--forget", result.message)
                 self.assertEqual(
                     json.loads(settings.read_text())["statusLine"]["command"],
                     "my-new-footer",
@@ -240,9 +241,49 @@ class ClaudeProviderTests(unittest.TestCase):
                 reinstall = provider.install("/opt/llm-hud")
                 result = provider.uninstall()
 
-            self.assertEqual(reinstall.status, "skipped")
-            self.assertEqual(result.status, "skipped")
+            self.assertEqual(reinstall.status, "conflict")
+            self.assertEqual(result.status, "conflict")
             self.assertEqual(json.loads(settings.read_text())["statusLine"]["padding"], 9)
+
+    def test_deleting_the_status_line_heals_on_reinstall_and_uninstall(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "settings.json"
+            state_path = root / "state" / "providers" / "claude.json"
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = ClaudeProvider()
+                provider.install("/opt/llm-hud")
+                settings.write_text("{}")  # the user removed the statusLine
+                self.assertEqual(provider.install("/opt/llm-hud").status, "installed")
+                self.assertEqual(
+                    json.loads(settings.read_text())["statusLine"]["command"],
+                    "/opt/llm-hud render claude",
+                )
+
+                settings.write_text("{}")  # removed again
+                self.assertEqual(provider.uninstall().status, "uninstalled")
+                self.assertFalse(state_path.exists())
+                self.assertEqual(json.loads(settings.read_text()), {})
+
+    def test_forget_abandons_state_without_touching_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "settings.json"
+            state_path = root / "state" / "providers" / "claude.json"
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = ClaudeProvider()
+                provider.install("/opt/llm-hud")
+                configured = settings.read_text()
+                self.assertEqual(provider.forget().status, "forgotten")
+                self.assertFalse(state_path.exists())
+                self.assertEqual(settings.read_text(), configured)
+                self.assertEqual(provider.forget().status, "skipped")
 
     def test_schema_one_state_is_safely_reconstructed_on_uninstall(self):
         with tempfile.TemporaryDirectory() as directory:

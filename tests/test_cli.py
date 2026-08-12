@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -54,6 +55,44 @@ class InstallCommandTests(unittest.TestCase):
                 with contextlib.redirect_stdout(buffer):
                     args.handler(args)
         self.assertIn("codex CLI was not detected", buffer.getvalue())
+
+
+class UninstallCommandTests(unittest.TestCase):
+    def test_conflict_exits_nonzero_and_forget_clears_state(self):
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "settings.json"
+            state_path = root / "state" / "providers" / "claude.json"
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                ClaudeProvider().install("/opt/llm-hud")
+                payload = json.loads(settings.read_text())
+                payload["statusLine"]["command"] = "my-new-footer"
+                settings.write_text(json.dumps(payload))
+
+                args = parser.parse_args(["uninstall", "--provider", "claude"])
+                buffer = io.StringIO()
+                with contextlib.redirect_stdout(buffer):
+                    conflict_exit = args.handler(args)
+                self.assertEqual(conflict_exit, 1)
+                self.assertIn("[conflict]", buffer.getvalue())
+
+                args = parser.parse_args(
+                    ["uninstall", "--provider", "claude", "--forget"]
+                )
+                buffer = io.StringIO()
+                with contextlib.redirect_stdout(buffer):
+                    forget_exit = args.handler(args)
+                self.assertEqual(forget_exit, 0)
+                self.assertIn("[forgotten]", buffer.getvalue())
+                self.assertFalse(state_path.exists())
+                self.assertEqual(
+                    json.loads(settings.read_text())["statusLine"]["command"],
+                    "my-new-footer",
+                )
 
 
 class DoctorCommandTests(unittest.TestCase):
