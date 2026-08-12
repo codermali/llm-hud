@@ -54,7 +54,8 @@ jobs:
       - run: python -m unittest discover -s tests -t . -v
       - run: python bin/llm-hud --version
 
-  windows-unit-tests:
+  windows-selected-tests:
+    name: Windows selected tests (Python ${{ matrix.python-version }})
     runs-on: windows-latest
     strategy:
       matrix:
