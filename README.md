@@ -155,6 +155,14 @@ Claude Code 将状态栏 JSON 传给 `llm-hud render claude`。LLM HUD 从中读
 该目录中查找 `settings.json`。在 Windows 上，写入 Claude 配置的启动器路径使用
 正斜杠；保留的原状态栏也继续交给 Git Bash 执行。
 
+上游兼容边界：Claude Code [1.0.71](https://code.claude.com/docs/en/changelog#1-0-71)
+首次提供自定义状态栏，[2.1.80](https://code.claude.com/docs/en/changelog#2-1-80)
+首次向状态栏脚本提供 `rate_limits`，
+[2.1.153](https://code.claude.com/docs/en/changelog#2-1-153) 首次提供 `COLUMNS`
+和 `LINES`。LLM HUD 不强制检查版本；要同时获得上述配额和终端宽度数据，请使用
+Claude Code 2.1.153 或更高版本。输入字段以
+[Claude Code 状态栏文档](https://code.claude.com/docs/en/statusline)为准。
+
 ### Codex CLI
 
 Codex CLI 不使用外部状态栏渲染器。LLM HUD 配置以下原生
@@ -174,6 +182,13 @@ status_line = [
 显示样式和刷新时间由 Codex CLI 决定。项目级 `.codex/config.toml` 或命令行选择的
 profile 可能覆盖用户级配置，`doctor` 目前只检查用户级基础配置。
 
+上游兼容边界：Codex CLI
+[0.99.0](https://github.com/openai/codex/releases/tag/rust-v0.99.0) 是首个发布
+`[tui].status_line` 的稳定版本，并包含这里使用的五个字段。LLM HUD 不强制检查
+版本；请使用 Codex CLI 0.99.0 或更高版本，并以
+[Codex 配置参考](https://developers.openai.com/codex/config-reference/)
+中的当前定义为准。
+
 ### Kimi CLI
 
 LLM HUD 当前保留 Kimi CLI 自带的底部工具栏。原因是外部状态栏命令不能获得内置栏
@@ -181,6 +196,10 @@ LLM HUD 当前保留 Kimi CLI 自带的底部工具栏。原因是外部状态�
 重置时间继续通过 Kimi CLI 内的 `/usage` 查看。
 
 安装时 Kimi 会显示为 `builtin`，不会修改其配置，因此卸载时也没有需要恢复的内容。
+这项集成不依赖 Kimi 的配置接口，所以没有由 LLM HUD 引入的配置功能最低版本；
+`/usage` 的行为以
+[Kimi Code CLI 命令文档](https://moonshotai.github.io/kimi-cli/en/reference/slash-commands.html#usage)
+为准。
 
 ## 项目结构
 
