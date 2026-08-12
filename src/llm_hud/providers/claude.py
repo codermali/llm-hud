@@ -171,11 +171,15 @@ def snapshot_from_payload(payload: dict[str, Any]) -> HudSnapshot:
     if not isinstance(cwd, str):
         cwd = None
 
+    # rate_limits appears only for Claude subscription accounts and only after
+    # the first response; each window may be independently absent.  Absent data
+    # renders nothing rather than a misleading placeholder.
     limits = payload.get("rate_limits")
     limits = limits if isinstance(limits, dict) else {}
     windows = tuple(
-        UsageWindow(label, _remaining(limits.get(key)), _resets_at(limits.get(key)))
+        UsageWindow(label, _remaining(limits[key]), _resets_at(limits[key]))
         for key, label in (("five_hour", "5h"), ("seven_day", "7d"))
+        if key in limits
     )
     return HudSnapshot(
         provider="Claude",

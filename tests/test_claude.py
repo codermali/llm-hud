@@ -116,12 +116,7 @@ class ClaudeProviderTests(unittest.TestCase):
                 self.assertEqual(configured["padding"], 2)
                 self.assertEqual(configured["refreshInterval"], 5)
                 output = render(b'{"model":{"display_name":"Sonnet"}}', color=False)
-                self.assertEqual(
-                    output,
-                    "existing\nClaude · Sonnet\n"
-                    "5h  ░░░░░░░░░░    --    7d  ░░░░░░░░░░    --   "
-                    "waiting for first response",
-                )
+                self.assertEqual(output, "existing\nClaude · Sonnet")
                 provider.uninstall()
                 restored = json.loads(settings.read_text())
                 self.assertEqual(restored["theme"], "dark")
@@ -385,7 +380,41 @@ class ClaudeProviderTests(unittest.TestCase):
             ):
                 output = render(b'{"model":{"display_name":"Opus"}}', color=False)
 
-            self.assertTrue(output.startswith("Claude · Opus\n"))
+            self.assertEqual(output, "Claude · Opus")
+
+    def test_absent_rate_limit_data_renders_no_usage_row(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = {
+                "LLM_HUD_CLAUDE_SETTINGS": str(root / "settings.json"),
+                "LLM_HUD_STATE_DIR": str(root / "state"),
+                "COLUMNS": None,
+            }
+            with Environment(**base):
+                self.assertEqual(
+                    render(b'{"model":{"display_name":"Opus"}}', color=False),
+                    "Claude · Opus",
+                )
+                partial = json.dumps(
+                    {
+                        "model": {"display_name": "Opus"},
+                        "rate_limits": {"seven_day": {"used_percentage": 41}},
+                    }
+                ).encode()
+                self.assertEqual(
+                    render(partial, color=False),
+                    "Claude · Opus\n7d  ██████░░░░   59%",
+                )
+                empty_window = json.dumps(
+                    {
+                        "model": {"display_name": "Opus"},
+                        "rate_limits": {"five_hour": {}},
+                    }
+                ).encode()
+                self.assertEqual(
+                    render(empty_window, color=False),
+                    "Claude · Opus\n5h  ░░░░░░░░░░    --",
+                )
 
     def test_terminal_width_comes_from_the_columns_variable(self):
         raw = json.dumps(

@@ -21,7 +21,7 @@ class HudTests(unittest.TestCase):
                 "5h  ████████░░   76%    7d  ██████░░░░   59%",
             )
 
-    def test_pending_state_is_explicit(self):
+    def test_windows_without_data_render_placeholder_bars(self):
         snapshot = HudSnapshot(
             provider="Claude",
             model="Sonnet",
@@ -30,9 +30,12 @@ class HudTests(unittest.TestCase):
         self.assertEqual(
             render_hud(snapshot, color=False),
             "Claude · Sonnet\n"
-            "5h  ░░░░░░░░░░    --    7d  ░░░░░░░░░░    --   "
-            "waiting for first response",
+            "5h  ░░░░░░░░░░    --    7d  ░░░░░░░░░░    --",
         )
+
+    def test_no_windows_renders_the_header_only(self):
+        snapshot = HudSnapshot(provider="Claude", model="Sonnet")
+        self.assertEqual(render_hud(snapshot, color=False), "Claude · Sonnet")
 
     def test_narrow_terminals_put_each_window_on_its_own_line(self):
         snapshot = HudSnapshot(

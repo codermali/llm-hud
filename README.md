@@ -22,11 +22,12 @@ Claude · Opus · ~/projects/example
 5h  ████████░░  76%  ↻ 14:30    7d  ██████░░░░  59%  ↻ Fri 09:00
 ```
 
-首次响应前还没有额度数据，此时会明确显示等待状态：
+额度数据由 Claude Code 提供，只在 Claude Pro/Max 订阅账户上出现，并且要等到会话的
+首次响应之后。没有额度数据时（首次响应之前，或使用 API key 等不提供额度的账户），
+HUD 只显示第一行；两个额度窗口也可能各自缺失，此时只显示存在的窗口：
 
 ```text
 Claude · Opus · ~/projects/example
-5h  ░░░░░░░░░░  --    7d  ░░░░░░░░░░  --   waiting for first response
 ```
 
 Codex CLI 由自身负责渲染，LLM HUD 只选择和排列原生字段：

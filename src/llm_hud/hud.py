@@ -108,14 +108,7 @@ def render_hud(snapshot: HudSnapshot, color: bool = True) -> str:
 
     segments = [_window_segment(window, color) for window in snapshot.windows]
     row = "    ".join(segments)
-    pending = all(window.remaining is None for window in snapshot.windows)
-    suffix = _style("waiting for first response", "2", color) if pending else ""
-    candidate = row + (f"   {suffix}" if suffix else "")
-
     columns = snapshot.columns if snapshot.columns and snapshot.columns > 0 else 120
-    if _visible_length(candidate) <= columns:
-        return f"{header}\n{candidate}"
-
-    if suffix:
-        segments[-1] = f"{segments[-1]}   {suffix}"
+    if _visible_length(row) <= columns:
+        return f"{header}\n{row}"
     return "\n".join([header, *segments])
