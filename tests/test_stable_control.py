@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DISPATCHER_SOURCE = ROOT / "scripts" / "llm-hud-dispatcher"
 CONTROL_SOURCE = ROOT / "scripts" / "runtime_control.py"
 PREVIOUS_RUNTIME_FIXTURE = ROOT / "tests" / "fixtures" / "runtime_v0_2_0"
-PREVIOUS_RUNTIME_RELEASE = "0.2.0-f7d14db3ff86"
+PREVIOUS_RUNTIME_RELEASE = "0.2.0-98de8d3e9431"
 
 
 def install_stable_control(root: Path) -> Path:

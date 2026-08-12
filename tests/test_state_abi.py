@@ -20,9 +20,15 @@ from llm_hud.storage import JOURNAL_SCHEMAS
 from tests.support import Environment
 
 
-# Schemas written by the previous release (v0.2.0) and by the current tree.
-# Advance this pin after every release so the next release keeps its N-1 promise.
+# Schemas written and read by the previous release (v0.2.0), plus the schemas
+# written by the current tree. Advance these pins after every release: the
+# current runtime must read N-1 state, and N-1 must also be able to read state
+# written before a rollback to it.
 PREVIOUS_RELEASE_WRITES = {"claude": 2, "codex": 1}
+PREVIOUS_RELEASE_READS = {
+    "claude": frozenset((1, 2)),
+    "codex": frozenset((1,)),
+}
 CURRENT_WRITES = {"claude": 2, "codex": 1}
 
 
@@ -35,6 +41,10 @@ class StateAbiTests(unittest.TestCase):
                 provider_id,
             )
         self.assertEqual(JOURNAL_SCHEMAS, frozenset((1,)))
+
+    def test_current_writes_remain_readable_after_rollback(self):
+        for provider_id, schema in CURRENT_WRITES.items():
+            self.assertIn(schema, PREVIOUS_RELEASE_READS[provider_id], provider_id)
 
     def test_written_schemas_are_pinned(self):
         with tempfile.TemporaryDirectory() as directory:
