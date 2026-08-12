@@ -13,6 +13,9 @@ from llm_hud.providers import provider_by_id, providers
 
 
 PROVIDER_IDS = tuple(provider.id for provider in providers())
+RENDER_PROVIDER_IDS = tuple(
+    provider.id for provider in providers() if provider.capabilities.custom_renderer
+)
 # Keep in sync with llm_hud.runtime.LAUNCHER_STATE_NAME (pinned by a test);
 # importing the runtime module here would slow every render tick.
 _LAUNCHER_STATE_NAME = ".llm-hud-launcher-state.json"
@@ -136,7 +139,13 @@ def command_render(args: argparse.Namespace) -> int:
 def command_providers(_: argparse.Namespace) -> int:
     for provider in providers():
         state = "detected" if provider.available() else "not detected"
-        print(f"{provider.id}\t{state}\t{provider.capabilities.integration}")
+        capabilities = provider.capabilities
+        persistent = ",".join(capabilities.persistent_metrics) or "-"
+        on_demand = ",".join(capabilities.on_demand_metrics) or "-"
+        print(
+            f"{provider.id}\t{state}\t{capabilities.integration}"
+            f"\t{persistent}\t{on_demand}"
+        )
     return 0
 
 
@@ -165,7 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.set_defaults(handler=command_doctor)
 
     render_parser = subparsers.add_parser("render", help="render a provider HUD")
-    render_parser.add_argument("provider", choices=PROVIDER_IDS)
+    render_parser.add_argument("provider", choices=RENDER_PROVIDER_IDS)
     render_parser.add_argument("--no-color", action="store_true")
     render_parser.set_defaults(handler=command_render)
 

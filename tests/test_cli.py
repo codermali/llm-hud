@@ -59,6 +59,19 @@ class InstallCommandTests(unittest.TestCase):
         self.assertIn("codex CLI was not detected", buffer.getvalue())
 
 
+class RenderCommandTests(unittest.TestCase):
+    def test_render_only_exposes_custom_renderer_providers(self):
+        parser = build_parser()
+        parser.parse_args(["render", "claude"])
+        for provider_id in ("codex", "kimi"):
+            with self.subTest(provider=provider_id):
+                buffer = io.StringIO()
+                with contextlib.redirect_stderr(buffer):
+                    with self.assertRaises(SystemExit) as caught:
+                        parser.parse_args(["render", provider_id])
+                self.assertEqual(caught.exception.code, 2)
+
+
 class CommandPathTests(unittest.TestCase):
     def test_launcher_state_name_matches_the_runtime_constant(self):
         from llm_hud import cli, runtime

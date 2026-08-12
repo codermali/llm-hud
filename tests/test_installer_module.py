@@ -243,9 +243,9 @@ class RuntimeInstallerTests(unittest.TestCase):
                         with self.assertRaisesRegex(RuntimeLayoutError, "non-empty"):
                             claim_install_root(root)
                     else:
-                        original_link = os.link
-
-                        def race_marker(source, destination, **kwargs):
+                        def race_marker(
+                            source, destination, original_link=os.link, **kwargs
+                        ):
                             Path(destination).write_text("someone else's marker\n")
                             return original_link(source, destination, **kwargs)
 
