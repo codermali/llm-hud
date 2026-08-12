@@ -33,6 +33,16 @@ jobs:
       - run: python -m unittest discover -s tests -t . -v
       - run: python bin/llm-hud --version
 
+  windows-unit-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - run: python -m unittest discover -s tests -t . -v
+      - run: python bin/llm-hud --version
+
   old-python-guard:
     runs-on: ubuntu-latest
     steps:
@@ -70,6 +80,7 @@ jobs:
           LLM_HUD_CLAUDE_SETTINGS: ${{ runner.temp }}/claude-settings.json
           LLM_HUD_CODEX_CONFIG: ${{ runner.temp }}/codex-config.toml
           LLM_HUD_CLAUDE_BIN: "1"
+
       - name: Launcher pins an absolute interpreter and runs without Python on PATH
         run: |
           launcher="$RUNNER_TEMP/bin/llm-hud"
@@ -99,6 +110,35 @@ jobs:
           LLM_HUD_CLAUDE_BIN: ""
           LLM_HUD_CODEX_BIN: ""
           LLM_HUD_KIMI_BIN: ""
+
+  windows-installer-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Install, diagnose, and uninstall through Git Bash
+        shell: bash
+        run: |
+          test_root=$(cygpath -u "$RUNNER_TEMP")/llm-hud-windows
+          export LLM_HUD_INSTALL_DIR="$test_root/runtime"
+          export LLM_HUD_BIN_DIR="$test_root/bin"
+          export LLM_HUD_STATE_DIR="$test_root/state"
+          export LLM_HUD_CLAUDE_SETTINGS="$test_root/claude-settings.json"
+          export LLM_HUD_CODEX_CONFIG="$test_root/codex-config.toml"
+          export LLM_HUD_CLAUDE_BIN=1
+          export LLM_HUD_CODEX_BIN=
+          export LLM_HUD_KIMI_BIN=
+
+          ./install.sh
+          launcher="$LLM_HUD_BIN_DIR/llm-hud"
+          test -f "$launcher"
+          grep -qx '# llm-hud-managed-launcher-v1' "$launcher"
+          "$launcher" --version
+          "$launcher" doctor
+          python -c 'import json, pathlib, sys; command = json.loads(pathlib.Path(sys.argv[1]).read_text())["statusLine"]["command"]; assert "\\" not in command, command' "$LLM_HUD_CLAUDE_SETTINGS"
+          "$launcher" uninstall
 
   bootstrap-smoke:
     runs-on: ubuntu-latest
