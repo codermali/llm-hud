@@ -124,6 +124,9 @@ def _read_owned_text(path: Path, description: str) -> str | None:
     descriptor = -1
     try:
         descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        if opened.st_size > MAX_MANAGED_TEXT_SIZE:
+            raise RuntimeLayoutError(f"{description} is too large: {path}")
         chunks: list[bytes] = []
         remaining = MAX_MANAGED_TEXT_SIZE + 1
         while remaining:
@@ -703,6 +706,11 @@ def source_digest(root: Path, *, reject_python_cache: bool = False) -> str:
         relative = path.relative_to(root)
         name = relative.as_posix().encode("utf-8")
         content, executable = _read_source_file(path)
+        if os.name == "nt":
+            # Windows has no portable POSIX execute bit. The runtime ABI has
+            # exactly one executable content path, so preserve the digest
+            # produced by released POSIX archives for that canonical launcher.
+            executable = relative.as_posix() == "bin/llm-hud"
         digest.update(len(name).to_bytes(4, "big"))
         digest.update(name)
         digest.update(b"\x01" if executable else b"\x00")

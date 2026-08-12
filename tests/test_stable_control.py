@@ -24,6 +24,7 @@ from llm_hud.runtime import (
     initialize_layout,
     read_activation,
     runtime_path,
+    source_digest,
     validate_runtime,
 )
 
@@ -108,6 +109,16 @@ def load_installed_control(root: Path):
 
 
 class StableDispatcherTests(unittest.TestCase):
+    def test_v0_2_0_fixture_keeps_its_released_digest(self):
+        marker = json.loads(
+            (PREVIOUS_RUNTIME_FIXTURE / RUNTIME_MARKER_NAME).read_text()
+        )
+
+        self.assertEqual(marker["release_id"], PREVIOUS_RUNTIME_RELEASE)
+        self.assertEqual(
+            source_digest(PREVIOUS_RUNTIME_FIXTURE), marker["content_sha256"]
+        )
+
     def test_current_control_dispatches_and_rolls_back_to_v0_2_0_runtime(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "runtime"

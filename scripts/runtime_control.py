@@ -125,6 +125,9 @@ def _read_owned_text(path: Path, description: str) -> str:
     descriptor = -1
     try:
         descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        if opened.st_size > MAX_MANAGED_TEXT_SIZE:
+            raise ControlError(f"{description} is too large: {path}")
         chunks: list[bytes] = []
         remaining = MAX_MANAGED_TEXT_SIZE + 1
         while remaining:
@@ -261,6 +264,11 @@ def _source_digest(root: Path) -> str:
         relative = path.relative_to(root)
         name = relative.as_posix().encode("utf-8")
         content, executable = _read_content_file(path)
+        if os.name == "nt":
+            # Windows has no portable POSIX execute bit. Keep the frozen
+            # runtime digest ABI by treating its one canonical launcher as
+            # executable, matching release archives created on POSIX.
+            executable = relative.as_posix() == "bin/llm-hud"
         digest.update(len(name).to_bytes(4, "big"))
         digest.update(name)
         digest.update(b"\x01" if executable else b"\x00")
