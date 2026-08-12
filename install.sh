@@ -106,12 +106,36 @@ find_python() {
 
 download_file() {
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL -o "$2" "$1"
+    curl -fsSL --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 1 \
+      -o "$2" "$1"
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$2" "$1"
+    wget -q --timeout=15 --tries=3 -O "$2" "$1"
   else
     printf '%s\n' "Neither curl nor wget is available to download llm-hud." >&2
     exit 1
+  fi
+}
+
+# The two release assets must come from the same release: resolve the latest
+# tag once and pin both downloads to it, so an install that races a release
+# publication cannot pair a new tarball with an old checksum file.
+pin_release_assets() {
+  command -v curl >/dev/null 2>&1 || return 0
+  release_url=$(
+    curl -fsSL --connect-timeout 15 --max-time 60 -o /dev/null \
+      -w '%{url_effective}' \
+      https://github.com/codermali/llm-hud/releases/latest 2>/dev/null
+  ) || return 0
+  case "$release_url" in
+    https://github.com/codermali/llm-hud/releases/tag/*) ;;
+    *) return 0 ;;
+  esac
+  release_tag=${release_url##*/}
+  reject_line_break release-tag "$release_tag"
+  release_base="https://github.com/codermali/llm-hud/releases/download/$release_tag"
+  repo_tarball="$release_base/llm-hud.tar.gz"
+  if [ "$repo_checksum" = "$default_repo_checksum" ]; then
+    repo_checksum="$release_base/SHA256SUMS"
   fi
 }
 
@@ -161,6 +185,9 @@ if [ -n "$script_dir" ] && [ -f "$script_dir/src/llm_hud/cli.py" ]; then
   source_root=$script_dir
   printf 'Installing from %s\n' "$source_root"
 else
+  if [ "$repo_tarball" = "$default_repo_tarball" ]; then
+    pin_release_assets
+  fi
   cleanup_dir=$(mktemp -d)
   printf 'Downloading llm-hud from %s\n' "$repo_tarball"
   archive="$cleanup_dir/llm-hud.tar.gz"
@@ -192,7 +219,10 @@ if (
 with archive_path.open("rb") as archive_file:
     actual = hashlib.file_digest(archive_file, "sha256").hexdigest()
 if actual != matches[0]:
-    raise SystemExit("llm-hud: release archive checksum mismatch")
+    raise SystemExit(
+        "llm-hud: release archive checksum mismatch "
+        "(a release may be publishing right now; retry in a minute)"
+    )
 ' "$checksum" "$archive"
   fi
   tar -xzf "$archive" -C "$cleanup_dir"

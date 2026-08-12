@@ -124,6 +124,81 @@ class RuntimeInstallerTests(unittest.TestCase):
                     self.assertEqual(state["control_sha256"], tools.control_sha256)
                     validate_runtime(root, metadata.release_id)
 
+    def test_prune_removes_only_unreferenced_releases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            owned_root(root)
+            initialize_layout(root)
+            versions = root / "versions"
+            names = (
+                "0.1.0-aaaaaaaaaaaa",
+                "0.1.0-bbbbbbbbbbbb",
+                "0.1.0-cccccccccccc",
+            )
+            for name in names:
+                (versions / name).mkdir()
+            (root / "activation").write_text(
+                "llm-hud-activation-v1 0.1.0-bbbbbbbbbbbb 0.1.0-cccccccccccc\n"
+            )
+
+            installer_module._prune_inactive_runtimes(root)
+
+            remaining = {path.name for path in versions.iterdir()}
+            self.assertEqual(
+                remaining, {"0.1.0-bbbbbbbbbbbb", "0.1.0-cccccccccccc"}
+            )
+
+    def test_stale_staging_directories_are_swept_on_install(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            owned_root(root)
+            initialize_layout(root)
+            stale = root / f"{STAGING_PREFIX}stale"
+            stale.mkdir()
+            (stale / "leftover").write_text("partial copy\n")
+            old = 4000.0  # well past STAGING_MAX_AGE_SECONDS
+            os.utime(stale, (old, old))
+            fresh = root / f"{STAGING_PREFIX}fresh"
+            fresh.mkdir()
+
+            install_versioned_runtime(ROOT, root)
+
+            self.assertFalse(stale.exists())
+            self.assertTrue(fresh.exists())
+
+    def test_losing_a_claim_race_accepts_the_winner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for label, marker_content, succeeds in (
+                ("valid-winner", f"{INSTALL_MARKER_VALUE}\n", True),
+                ("foreign-marker", "someone else\n", False),
+                ("no-marker", None, False),
+            ):
+                with self.subTest(label=label):
+                    root = Path(directory) / label
+                    root.mkdir()
+
+                    def lose_the_race(root, marker, baseline, content=marker_content):
+                        if content is not None:
+                            marker.write_text(content)
+                        raise RuntimeLayoutError(
+                            "install root changed while claiming ownership"
+                        )
+
+                    with mock.patch.object(
+                        installer_module,
+                        "_claim_marker_exclusively",
+                        side_effect=lose_the_race,
+                    ):
+                        if succeeds:
+                            claim_install_root(root)
+                        else:
+                            with self.assertRaisesRegex(
+                                RuntimeLayoutError, "changed while claiming"
+                            ):
+                                claim_install_root(root)
+
     def test_unregistered_stable_protocol_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "runtime"

@@ -4,9 +4,11 @@ import contextlib
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from llm_hud.cli import _version, build_parser, command_doctor
 from llm_hud.providers.claude import ClaudeProvider
@@ -55,6 +57,34 @@ class InstallCommandTests(unittest.TestCase):
                 with contextlib.redirect_stdout(buffer):
                     args.handler(args)
         self.assertIn("codex CLI was not detected", buffer.getvalue())
+
+
+class CommandPathTests(unittest.TestCase):
+    def test_launcher_state_name_matches_the_runtime_constant(self):
+        from llm_hud import cli, runtime
+
+        self.assertEqual(cli._LAUNCHER_STATE_NAME, runtime.LAUNCHER_STATE_NAME)
+
+    def test_managed_dispatch_records_the_external_launcher(self):
+        from llm_hud.cli import _command_path
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            (root / "bin").mkdir(parents=True)
+            launcher = stub_executable(Path(directory), "llm-hud", "exit 0")
+            (root / ".llm-hud-launcher-state.json").write_text(
+                '{"schema": 1, "launcher_path": "%s", '
+                '"current_sha256": null, "pending_sha256": null}' % launcher
+            )
+            dispatcher = root / "bin" / "llm-hud"
+            with Environment(LLM_HUD_COMMAND_PATH=None):
+                with mock.patch.object(sys, "argv", [str(dispatcher), "install"]):
+                    self.assertEqual(_command_path(), str(launcher))
+
+                # Without launcher state, fall back to which()/argv[0].
+                (root / ".llm-hud-launcher-state.json").unlink()
+                with mock.patch.object(sys, "argv", [str(dispatcher), "install"]):
+                    self.assertNotEqual(_command_path(), str(launcher))
 
 
 class UninstallCommandTests(unittest.TestCase):

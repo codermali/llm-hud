@@ -10,6 +10,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,7 @@ from llm_hud.runtime import (
     RUNTIME_CONTENT,
     LAUNCHER_STATE_NAME,
     STABLE_STATE_NAME,
+    VERSIONS_DIR_NAME,
     Activation,
     RuntimeLayoutError,
     RuntimeLock,
@@ -38,6 +40,9 @@ from llm_hud.storage import atomic_write_json, atomic_write_text, fsync_director
 
 
 STAGING_PREFIX = ".llm-hud-stage-"
+# Staging directories younger than this may belong to a live concurrent
+# install; older ones were orphaned by a crash and are safe to remove.
+STAGING_MAX_AGE_SECONDS = 3600.0
 STABLE_STATE_SCHEMA = 1
 LAUNCHER_STATE_SCHEMA = 1
 DISPATCHER_SOURCE = Path("scripts") / "llm-hud-dispatcher"
@@ -373,7 +378,18 @@ def claim_install_root(root: Path, *, allow_legacy: bool = False) -> None:
     baseline = _root_entries(root)
     if baseline and not (allow_legacy and _legacy_install_root_is_safe(root)):
         raise RuntimeLayoutError(f"refusing non-empty unmanaged install root: {root}")
-    _claim_marker_exclusively(root, marker, baseline)
+    try:
+        _claim_marker_exclusively(root, marker, baseline)
+    except RuntimeLayoutError as error:
+        # A concurrent installer may have won the claim race; accept the root
+        # when its valid marker landed, otherwise surface the refusal.
+        try:
+            content = _read_regular_bytes(marker, "concurrent install marker")
+        except RuntimeLayoutError:
+            raise error
+        if content != f"{INSTALL_MARKER_VALUE}\n".encode("utf-8"):
+            raise error
+        return
     if _read_regular_bytes(marker, "install marker") != (
         f"{INSTALL_MARKER_VALUE}\n".encode("utf-8")
     ):
@@ -1347,6 +1363,63 @@ def _remove_staging(
         pass
 
 
+def _sweep_stale_staging(root: Path) -> None:
+    """Remove staging directories orphaned by an interrupted install."""
+    cutoff = time.time() - STAGING_MAX_AGE_SECONDS
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return
+    changed = False
+    for entry in entries:
+        if not entry.name.startswith(STAGING_PREFIX):
+            continue
+        path = Path(entry.path)
+        try:
+            metadata = path.lstat()
+        except OSError:
+            continue
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            continue
+        if metadata.st_mtime > cutoff:
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        changed = True
+    if changed:
+        fsync_directory(root)
+
+
+def _prune_inactive_runtimes(root: Path, *, lock_timeout: float = 10.0) -> None:
+    """Remove finalized releases no longer reachable as active or previous."""
+    with RuntimeLock(root, timeout=lock_timeout):
+        activation = read_activation(root)
+        if activation is None:
+            return
+        keep = {activation.active}
+        if activation.previous is not None:
+            keep.add(activation.previous)
+        versions = root / VERSIONS_DIR_NAME
+        try:
+            entries = list(os.scandir(versions))
+        except OSError:
+            return
+        changed = False
+        for entry in entries:
+            if entry.name in keep:
+                continue
+            path = Path(entry.path)
+            try:
+                metadata = path.lstat()
+            except OSError:
+                continue
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                continue
+            shutil.rmtree(path, ignore_errors=True)
+            changed = True
+        if changed:
+            fsync_directory(versions)
+
+
 def _smoke_test_runtime_candidate(
     staging: Path,
     python: Path,
@@ -1462,6 +1535,7 @@ def install_runtime_from_source(
     expected_content_sha256 = source_digest(source)
     version = embedded_runtime_version(source)
     initialize_layout(root)
+    _sweep_stale_staging(root)
     try:
         root = root.resolve(strict=True)
         root_metadata = root.lstat()
@@ -1652,6 +1726,10 @@ def install_complete(
             error,
         )
         raise
+    try:
+        _prune_inactive_runtimes(root)
+    except RuntimeLayoutError:
+        pass  # garbage collection is best effort; the install succeeded
     return metadata, activation
 
 

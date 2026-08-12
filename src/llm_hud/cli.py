@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -12,12 +13,42 @@ from llm_hud.providers import provider_by_id, providers
 
 
 PROVIDER_IDS = tuple(provider.id for provider in providers())
+# Keep in sync with llm_hud.runtime.LAUNCHER_STATE_NAME (pinned by a test);
+# importing the runtime module here would slow every render tick.
+_LAUNCHER_STATE_NAME = ".llm-hud-launcher-state.json"
+
+
+def _managed_launcher_path() -> str | None:
+    """The external launcher recorded for a managed runtime dispatch.
+
+    Under the versioned layout the dispatcher sets argv[0] to
+    <root>/bin/llm-hud, which is not on PATH; the launcher state file next to
+    it names the PATH-visible launcher that provider configs should record.
+    """
+    argv0 = Path(sys.argv[0])
+    if argv0.name != "llm-hud":
+        return None
+    state_path = argv0.parent.parent / _LAUNCHER_STATE_NAME
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    launcher = payload.get("launcher_path") if isinstance(payload, dict) else None
+    if not isinstance(launcher, str) or not launcher:
+        return None
+    path = Path(launcher)
+    if not path.is_absolute() or not path.is_file() or not os.access(path, os.X_OK):
+        return None
+    return str(path)
 
 
 def _command_path() -> str:
     override = os.environ.get("LLM_HUD_COMMAND_PATH")
     if override:
         return str(Path(override).expanduser())
+    managed = _managed_launcher_path()
+    if managed:
+        return managed
     installed = shutil.which("llm-hud")
     if installed:
         return installed
