@@ -180,7 +180,9 @@ def claim_install_root(root: Path) -> None:
         descriptor = os.open(marker, flags, 0o600)
     except FileExistsError:
         if _read_regular_bytes(marker, "concurrent install marker") != payload:
-            raise RuntimeLayoutError(f"unrecognized install marker: {marker}")
+            raise RuntimeLayoutError(
+                f"unrecognized install marker: {marker}"
+            ) from None
         return
     except OSError as error:
         raise RuntimeLayoutError(

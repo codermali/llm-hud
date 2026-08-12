@@ -44,6 +44,7 @@ target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "B"]
-# B904 (raise ... from) is stylistic, and the frozen stable-protocol scripts
-# cannot change without a protocol revision.
-ignore = ["B904"]
+
+[tool.ruff.lint.per-file-ignores]
+# This fixture preserves the exact v0.2.0 release bytes and digest.
+"tests/fixtures/runtime_v0_2_0/**" = ["B904"]

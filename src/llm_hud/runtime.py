@@ -231,7 +231,9 @@ def initialize_layout(root: Path) -> None:
         except FileExistsError:
             metadata = versions.lstat()
             if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-                raise RuntimeLayoutError(f"versions path is not a directory: {versions}")
+                raise RuntimeLayoutError(
+                    f"versions path is not a directory: {versions}"
+                ) from None
         except OSError as error:
             raise RuntimeLayoutError(
                 f"cannot create versions directory {versions}: {error}"
@@ -885,7 +887,9 @@ class RuntimeLock:
             except BlockingIOError:
                 if time.monotonic() >= deadline:
                     os.close(descriptor)
-                    raise RuntimeLayoutError("another runtime operation is in progress")
+                    raise RuntimeLayoutError(
+                        "another runtime operation is in progress"
+                    ) from None
                 time.sleep(0.05)
             except OSError as error:
                 os.close(descriptor)
