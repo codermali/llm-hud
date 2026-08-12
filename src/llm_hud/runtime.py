@@ -349,12 +349,12 @@ def read_activation(root: Path) -> Activation | None:
     return None if raw is None else parse_activation(raw)
 
 
-def _activate_unlocked(
+def _activate_with_replaced_unlocked(
     root: Path,
     release_id: str,
     *,
     expected_active: str | None | object = _UNSET,
-) -> Activation:
+) -> tuple[Activation, Activation | None]:
     _require_layout(root)
     validate_runtime(root, release_id)
     current = read_activation(root)
@@ -369,7 +369,7 @@ def _activate_unlocked(
     previous: str | None = None
     if current is not None:
         if current.active == release_id:
-            return current
+            return current, None
         try:
             validate_runtime(root, current.active)
         except RuntimeLayoutError:
@@ -395,7 +395,21 @@ def _activate_unlocked(
         )
     except OSError as error:
         raise RuntimeLayoutError(f"cannot write activation record: {error}") from error
-    return updated
+    return updated, current
+
+
+def _activate_unlocked(
+    root: Path,
+    release_id: str,
+    *,
+    expected_active: str | None | object = _UNSET,
+) -> Activation:
+    activation, _ = _activate_with_replaced_unlocked(
+        root,
+        release_id,
+        expected_active=expected_active,
+    )
+    return activation
 
 
 def activate(
@@ -408,6 +422,22 @@ def activate(
     with RuntimeLock(root, timeout=lock_timeout):
         return _activate_unlocked(
             root, release_id, expected_active=expected_active
+        )
+
+
+def activate_with_replaced(
+    root: Path,
+    release_id: str,
+    *,
+    expected_active: str | None | object = _UNSET,
+    lock_timeout: float = 10.0,
+) -> tuple[Activation, Activation | None]:
+    """Activate a runtime and return the exact activation record it replaced."""
+    with RuntimeLock(root, timeout=lock_timeout):
+        return _activate_with_replaced_unlocked(
+            root,
+            release_id,
+            expected_active=expected_active,
         )
 
 

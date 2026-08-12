@@ -18,6 +18,7 @@ from llm_hud.runtime import (
     RuntimeLayoutError,
     RuntimeLock,
     activate,
+    activate_with_replaced,
     finalize_runtime,
     format_activation,
     initialize_layout,
@@ -214,6 +215,41 @@ class ActivationTests(unittest.TestCase):
                 activate(root, second, expected_active="9.9.9-missing")
 
             self.assertEqual((root / ACTIVATION_NAME).read_bytes(), before)
+
+    def test_activate_with_replaced_returns_the_complete_prior_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            initialize_owned_layout(root)
+            first = create_runtime(root, "first", "1.0.0")
+            second = create_runtime(root, "second", "2.0.0")
+            third = create_runtime(root, "third", "3.0.0")
+            activate(root, first)
+            activate(root, second)
+
+            activation, replaced = activate_with_replaced(
+                root,
+                third,
+                expected_active=second,
+            )
+
+            self.assertEqual(activation, Activation(third, second))
+            self.assertEqual(replaced, Activation(second, first))
+
+    def test_activate_with_replaced_reports_no_replacement_for_a_noop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            initialize_owned_layout(root)
+            first = create_runtime(root, "first", "1.0.0")
+            activation = activate(root, first)
+
+            unchanged, replaced = activate_with_replaced(
+                root,
+                first,
+                expected_active=first,
+            )
+
+            self.assertEqual(unchanged, activation)
+            self.assertIsNone(replaced)
 
     def test_failed_activation_replace_keeps_the_old_record(self):
         with tempfile.TemporaryDirectory() as directory:

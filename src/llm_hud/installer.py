@@ -15,7 +15,6 @@ from pathlib import Path
 
 from llm_hud._platform import set_descriptor_mode
 from llm_hud.runtime import (
-    ACTIVATION_NAME,
     INSTALL_MARKER_NAME,
     INSTALL_MARKER_VALUE,
     RUNTIME_CONTENT,
@@ -26,7 +25,7 @@ from llm_hud.runtime import (
     RuntimeLayoutError,
     RuntimeLock,
     RuntimeMetadata,
-    activate,
+    activate_with_replaced,
     embedded_runtime_version,
     finalize_runtime,
     initialize_layout,
@@ -752,13 +751,13 @@ def _preflight_runtime_release(
         )
 
 
-def install_runtime_from_source(
+def _install_runtime_from_source(
     source: Path,
     root: Path,
     python: Path | None = None,
     *,
     stable_control: str | None = None,
-) -> tuple[RuntimeMetadata, Activation]:
+) -> tuple[RuntimeMetadata, Activation, Activation | None]:
     source = Path(source)
     root = Path(root)
     python = Path(sys.executable) if python is None else Path(python)
@@ -817,12 +816,12 @@ def install_runtime_from_source(
             metadata.version,
             stable_control,
         )
-        activation = activate(
+        activation, replaced_activation = activate_with_replaced(
             root,
             metadata.release_id,
             expected_active=expected_active,
         )
-        return metadata, activation
+        return metadata, activation, replaced_activation
     finally:
         _remove_staging(
             root,
@@ -832,16 +831,31 @@ def install_runtime_from_source(
         )
 
 
-def install_versioned_runtime(
+def install_runtime_from_source(
     source: Path,
     root: Path,
     python: Path | None = None,
+    *,
+    stable_control: str | None = None,
 ) -> tuple[RuntimeMetadata, Activation]:
+    metadata, activation, _ = _install_runtime_from_source(
+        source,
+        root,
+        python,
+        stable_control=stable_control,
+    )
+    return metadata, activation
+
+
+def _install_versioned_runtime(
+    source: Path,
+    root: Path,
+    python: Path | None = None,
+) -> tuple[RuntimeMetadata, Activation, Activation | None]:
     source = Path(source)
     root = Path(root)
     tools = load_stable_tools(source)
-    activation_before = _read_existing_activation(root)
-    metadata, activation = install_runtime_from_source(
+    metadata, activation, replaced_activation = _install_runtime_from_source(
         source,
         root,
         python,
@@ -856,34 +870,37 @@ def install_versioned_runtime(
     except Exception as error:
         _restore_after_install_failure(
             root,
-            activation_before,
+            replaced_activation,
             metadata.release_id,
             error,
         )
         raise
+    return metadata, activation, replaced_activation
+
+
+def install_versioned_runtime(
+    source: Path,
+    root: Path,
+    python: Path | None = None,
+) -> tuple[RuntimeMetadata, Activation]:
+    metadata, activation, _ = _install_versioned_runtime(source, root, python)
     return metadata, activation
-
-
-def _read_existing_activation(root: Path) -> Activation | None:
-    try:
-        (root / ACTIVATION_NAME).lstat()
-    except FileNotFoundError:
-        return None
-    except OSError as error:
-        raise RuntimeLayoutError(f"cannot inspect activation record: {error}") from error
-    return read_activation(root)
 
 
 def _restore_after_install_failure(
     root: Path,
-    previous: Activation | None,
+    replaced_activation: Activation | None,
     expected_active: str,
     failure: Exception,
 ) -> None:
-    if previous is None:
+    if replaced_activation is None:
         return
     try:
-        restore_activation(root, previous, expected_active=expected_active)
+        restore_activation(
+            root,
+            replaced_activation,
+            expected_active=expected_active,
+        )
     except RuntimeLayoutError as restore_error:
         raise RuntimeLayoutError(
             f"installation failed ({failure}); restoring the previous runtime also "
@@ -931,8 +948,7 @@ def install_complete(
     launcher = Path(launcher)
     python = Path(python)
     _preflight_external_launcher(root, launcher)
-    activation_before = _read_existing_activation(root)
-    metadata, activation = install_versioned_runtime(
+    metadata, activation, replaced_activation = _install_versioned_runtime(
         source,
         root,
         python,
@@ -949,7 +965,7 @@ def install_complete(
     except Exception as error:
         _restore_after_install_failure(
             root,
-            activation_before,
+            replaced_activation,
             metadata.release_id,
             error,
         )

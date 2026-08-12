@@ -799,6 +799,64 @@ class RuntimeInstallerTests(unittest.TestCase):
             )
             self.assertEqual(running.returncode, 0, running.stderr)
 
+    def test_post_activation_failure_restores_the_activation_actually_replaced(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "runtime"
+            second_source = base / "second-source"
+            third_source = base / "third-source"
+            launcher = base / "bin" / "llm-hud"
+            root.mkdir()
+            second_source.mkdir()
+            third_source.mkdir()
+            owned_root(root)
+            first, _ = install_complete(
+                ROOT,
+                root,
+                launcher,
+                Path(sys.executable),
+            )
+            copy_runtime_checkout(second_source)
+            (second_source / "README.md").write_text("second healthy release\n")
+            second, _ = install_runtime_from_source(second_source, root)
+            activate(root, first.release_id, expected_active=second.release_id)
+            copy_runtime_checkout(third_source)
+            shutil.copytree(ROOT / "scripts", third_source / "scripts")
+            (third_source / "README.md").write_text("third healthy release\n")
+            original_load = installer_module.load_stable_tools
+            injected = False
+
+            def activate_second_before_install(source: Path):
+                nonlocal injected
+                if not injected:
+                    injected = True
+                    activate(
+                        root,
+                        second.release_id,
+                        expected_active=first.release_id,
+                    )
+                return original_load(source)
+
+            with mock.patch(
+                "llm_hud.installer.load_stable_tools",
+                side_effect=activate_second_before_install,
+            ), mock.patch(
+                "llm_hud.installer._smoke_test_dispatcher",
+                side_effect=RuntimeLayoutError("simulated post-activation failure"),
+            ):
+                with self.assertRaisesRegex(RuntimeLayoutError, "simulated"):
+                    install_complete(
+                        third_source,
+                        root,
+                        launcher,
+                        Path(sys.executable),
+                    )
+
+            current = read_activation(root)
+            assert current is not None
+            self.assertEqual(current.active, second.release_id)
+            self.assertEqual(current.previous, first.release_id)
+
     def test_real_dispatch_is_preflighted_before_activation(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
