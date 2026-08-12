@@ -61,6 +61,38 @@ LEGACY_FLAT_DISPATCHER_SHA256 = (
 
 
 @dataclass(frozen=True)
+class StableProtocol:
+    """One frozen revision of the stable dispatcher and control pair."""
+
+    dispatcher_sha256: str
+    control_sha256: str
+
+
+# Every stable protocol revision ever shipped, oldest first.  Changing the
+# stable tools means freezing their new hashes here as the next revision;
+# installs recorded under any older revision migrate by file replacement,
+# while unknown hashes (a newer llm-hud, or tampering) are refused.  Every
+# revision must keep the dispatcher-facing interface: control.run(root, argv)
+# and control.ControlError.
+STABLE_PROTOCOLS: dict[int, StableProtocol] = {
+    1: StableProtocol(
+        dispatcher_sha256=STABLE_V1_DISPATCHER_SHA256,
+        control_sha256=STABLE_V1_CONTROL_SHA256,
+    ),
+}
+CURRENT_STABLE_PROTOCOL = 1
+
+
+def _protocol_for_state(state: dict[str, object]) -> int | None:
+    """The registered protocol revision a stable state file records."""
+    pair = (state["dispatcher_sha256"], state["control_sha256"])
+    for number, protocol in STABLE_PROTOCOLS.items():
+        if pair == (protocol.dispatcher_sha256, protocol.control_sha256):
+            return number
+    return None
+
+
+@dataclass(frozen=True)
 class StableTools:
     dispatcher: str
     control: str
@@ -780,12 +812,15 @@ def load_stable_tools(source: Path) -> StableTools:
         dispatcher_sha256=_sha256(dispatcher.encode("utf-8")),
         control_sha256=_sha256(control.encode("utf-8")),
     )
+    current = STABLE_PROTOCOLS[CURRENT_STABLE_PROTOCOL]
     if (
-        tools.dispatcher_sha256 != STABLE_V1_DISPATCHER_SHA256
-        or tools.control_sha256 != STABLE_V1_CONTROL_SHA256
+        tools.dispatcher_sha256 != current.dispatcher_sha256
+        or tools.control_sha256 != current.control_sha256
     ):
         raise RuntimeLayoutError(
-            "stable protocol v1 sources changed; use a versioned protocol migration"
+            "stable tool sources do not match stable protocol "
+            f"v{CURRENT_STABLE_PROTOCOL}; freeze the changed sources as the "
+            "next revision in STABLE_PROTOCOLS"
         )
     for description, text in (
         ("stable dispatcher", tools.dispatcher),
@@ -993,15 +1028,18 @@ def _preflight_stable_tools(
             )
         return
 
-    if (
-        state["dispatcher_sha256"] != STABLE_V1_DISPATCHER_SHA256
-        or state["control_sha256"] != STABLE_V1_CONTROL_SHA256
-    ):
-        raise RuntimeLayoutError("installed stable tools use an unsupported protocol")
-    allowed_dispatchers = {
-        STABLE_V1_DISPATCHER_SHA256,
-    }
-    allowed_controls = {STABLE_V1_CONTROL_SHA256}
+    installed_protocol = _protocol_for_state(state)
+    if installed_protocol is None:
+        raise RuntimeLayoutError(
+            "installed stable tools use an unsupported protocol (possibly "
+            "written by a newer llm-hud); rerun the newest installer"
+        )
+    recorded = STABLE_PROTOCOLS[installed_protocol]
+    current = STABLE_PROTOCOLS[CURRENT_STABLE_PROTOCOL]
+    # A crash mid-migration can leave either revision on disk; accept both so
+    # the installer can finish replacing them with the current protocol.
+    allowed_dispatchers = {recorded.dispatcher_sha256, current.dispatcher_sha256}
+    allowed_controls = {recorded.control_sha256, current.control_sha256}
     if dispatcher_hash is not None and dispatcher_hash not in allowed_dispatchers:
         raise RuntimeLayoutError(
             f"installed stable dispatcher was modified: {dispatcher_path}"
@@ -1340,9 +1378,12 @@ def _smoke_test_runtime_candidate(
 
 
 def _validate_frozen_control(control: str) -> str:
-    if _sha256(control.encode("utf-8")) != STABLE_V1_CONTROL_SHA256:
+    current = STABLE_PROTOCOLS[CURRENT_STABLE_PROTOCOL]
+    if _sha256(control.encode("utf-8")) != current.control_sha256:
         raise RuntimeLayoutError(
-            "stable protocol v1 control changed; use a versioned protocol migration"
+            "stable runtime control does not match stable protocol "
+            f"v{CURRENT_STABLE_PROTOCOL}; freeze the changed source as the "
+            "next revision in STABLE_PROTOCOLS"
         )
     try:
         compile(control, "stable runtime control", "exec", dont_inherit=True)

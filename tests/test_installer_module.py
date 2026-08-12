@@ -62,6 +62,98 @@ class RuntimeInstallerTests(unittest.TestCase):
             hashlib.sha256((ROOT / "bin" / "llm-hud").read_bytes()).hexdigest(),
             LEGACY_FLAT_DISPATCHER_SHA256,
         )
+        current = installer_module.STABLE_PROTOCOLS[
+            installer_module.CURRENT_STABLE_PROTOCOL
+        ]
+        self.assertEqual(tools.dispatcher_sha256, current.dispatcher_sha256)
+        self.assertEqual(tools.control_sha256, current.control_sha256)
+
+    def test_registered_older_stable_protocol_is_migrated(self):
+        old_dispatcher = "#!/bin/sh\nexec echo old protocol\n"
+        old_control = "raise SystemExit('old control')\n"
+        old = installer_module.StableProtocol(
+            dispatcher_sha256=hashlib.sha256(
+                old_dispatcher.encode("utf-8")
+            ).hexdigest(),
+            control_sha256=hashlib.sha256(old_control.encode("utf-8")).hexdigest(),
+        )
+        tools = installer_module.load_stable_tools(ROOT)
+        for label, dispatcher_content in (
+            ("clean", old_dispatcher),
+            # A crash mid-migration may have replaced only one file already.
+            ("mid-migration", tools.dispatcher),
+        ):
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory) / "runtime"
+                    root.mkdir()
+                    owned_root(root)
+                    initialize_layout(root)
+                    (root / "bin").mkdir()
+                    (root / "control").mkdir()
+                    dispatcher_path = root / "bin" / "llm-hud"
+                    dispatcher_path.write_text(dispatcher_content)
+                    dispatcher_path.chmod(0o700)
+                    (root / "control" / "runtime_control.py").write_text(old_control)
+                    (root / ".llm-hud-stable.json").write_text(
+                        json.dumps(
+                            {
+                                "schema": 1,
+                                "dispatcher_sha256": old.dispatcher_sha256,
+                                "control_sha256": old.control_sha256,
+                            }
+                        )
+                    )
+
+                    with mock.patch.dict(
+                        installer_module.STABLE_PROTOCOLS, {0: old}
+                    ):
+                        metadata, _ = install_versioned_runtime(ROOT, root)
+
+                    self.assertEqual(
+                        dispatcher_path.read_text(), tools.dispatcher
+                    )
+                    self.assertEqual(
+                        (root / "control" / "runtime_control.py").read_text(),
+                        tools.control,
+                    )
+                    state = json.loads((root / ".llm-hud-stable.json").read_text())
+                    self.assertEqual(
+                        state["dispatcher_sha256"], tools.dispatcher_sha256
+                    )
+                    self.assertEqual(state["control_sha256"], tools.control_sha256)
+                    validate_runtime(root, metadata.release_id)
+
+    def test_unregistered_stable_protocol_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            owned_root(root)
+            initialize_layout(root)
+            (root / "bin").mkdir()
+            (root / "control").mkdir()
+            foreign = "#!/bin/sh\nexec echo foreign\n"
+            dispatcher_path = root / "bin" / "llm-hud"
+            dispatcher_path.write_text(foreign)
+            dispatcher_path.chmod(0o700)
+            (root / "control" / "runtime_control.py").write_text(foreign)
+            digest = hashlib.sha256(foreign.encode("utf-8")).hexdigest()
+            (root / ".llm-hud-stable.json").write_text(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "dispatcher_sha256": digest,
+                        "control_sha256": digest,
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(
+                RuntimeLayoutError, "unsupported protocol"
+            ):
+                install_versioned_runtime(ROOT, root)
+
+            self.assertEqual(dispatcher_path.read_text(), foreign)
 
     def test_claim_refuses_nonempty_or_changed_unmanaged_roots(self):
         with tempfile.TemporaryDirectory() as directory:
