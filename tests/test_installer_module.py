@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
@@ -15,7 +14,6 @@ from unittest import mock
 import llm_hud.installer as installer_module
 from llm_hud._version import __version__
 from llm_hud.installer import (
-    LEGACY_FLAT_DISPATCHER_SHA256,
     STAGING_PREFIX,
     STABLE_V1_CONTROL_SHA256,
     STABLE_V1_DISPATCHER_SHA256,
@@ -52,24 +50,12 @@ def copy_runtime_checkout(destination: Path) -> None:
         shutil.copy2(ROOT / name, destination / name)
 
 
-def copy_legacy_runtime(destination: Path) -> None:
-    """A flat legacy install is by definition version 0.1.0 on disk."""
-    copy_runtime_checkout(destination)
-    (destination / "src" / "llm_hud" / "_version.py").write_text(
-        '__version__ = "0.1.0"\n'
-    )
-
-
 class RuntimeInstallerTests(unittest.TestCase):
     def test_stable_protocol_v1_bytes_are_frozen(self):
         tools = installer_module.load_stable_tools(ROOT)
 
         self.assertEqual(tools.dispatcher_sha256, STABLE_V1_DISPATCHER_SHA256)
         self.assertEqual(tools.control_sha256, STABLE_V1_CONTROL_SHA256)
-        self.assertEqual(
-            hashlib.sha256((ROOT / "bin" / "llm-hud").read_bytes()).hexdigest(),
-            LEGACY_FLAT_DISPATCHER_SHA256,
-        )
         current = installer_module.STABLE_PROTOCOLS[
             installer_module.CURRENT_STABLE_PROTOCOL
         ]
@@ -176,34 +162,45 @@ class RuntimeInstallerTests(unittest.TestCase):
             self.assertFalse(stale.exists())
             self.assertTrue(fresh.exists())
 
-    def test_losing_a_claim_race_accepts_the_winner(self):
+    def test_concurrent_claims_have_one_winner_and_losers_accept(self):
         with tempfile.TemporaryDirectory() as directory:
             for label, marker_content, succeeds in (
                 ("valid-winner", f"{INSTALL_MARKER_VALUE}\n", True),
                 ("foreign-marker", "someone else\n", False),
-                ("no-marker", None, False),
             ):
                 with self.subTest(label=label):
                     root = Path(directory) / label
                     root.mkdir()
+                    marker = root / INSTALL_MARKER_NAME
 
-                    def lose_the_race(root, marker, baseline, content=marker_content):
-                        if content is not None:
-                            marker.write_text(content)
-                        raise RuntimeLayoutError(
-                            "install root changed while claiming ownership"
-                        )
-
-                    with mock.patch.object(
-                        installer_module,
-                        "_claim_marker_exclusively",
-                        side_effect=lose_the_race,
+                    def racing_open(
+                        path,
+                        flags,
+                        *args,
+                        original=os.open,
+                        content=marker_content,
+                        target=marker,
+                        **kwargs,
                     ):
+                        # The concurrent winner lands its marker between the
+                        # empty check and our O_EXCL create.
+                        if (
+                            Path(path).name == INSTALL_MARKER_NAME
+                            and flags & os.O_EXCL
+                            and not target.exists()
+                        ):
+                            target.write_text(content)
+                        return original(path, flags, *args, **kwargs)
+
+                    with mock.patch("os.open", side_effect=racing_open):
                         if succeeds:
                             claim_install_root(root)
+                            self.assertEqual(
+                                marker.read_text(), f"{INSTALL_MARKER_VALUE}\n"
+                            )
                         else:
                             with self.assertRaisesRegex(
-                                RuntimeLayoutError, "changed while claiming"
+                                RuntimeLayoutError, "unrecognized install marker"
                             ):
                                 claim_install_root(root)
 
@@ -238,54 +235,17 @@ class RuntimeInstallerTests(unittest.TestCase):
 
             self.assertEqual(dispatcher_path.read_text(), foreign)
 
-    def test_claim_refuses_nonempty_or_changed_unmanaged_roots(self):
+    def test_claim_refuses_a_nonempty_unmanaged_root(self):
         with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            for label in ("nonempty", "raced"):
-                with self.subTest(label=label):
-                    root = base / label
-                    root.mkdir()
-                    marker = root / INSTALL_MARKER_NAME
-                    if label == "nonempty":
-                        (root / "sentinel").write_text("keep")
-                        with self.assertRaisesRegex(RuntimeLayoutError, "non-empty"):
-                            claim_install_root(root)
-                    else:
-                        def race_marker(
-                            source, destination, original_link=os.link, **kwargs
-                        ):
-                            Path(destination).write_text("someone else's marker\n")
-                            return original_link(source, destination, **kwargs)
+            root = Path(directory) / "populated"
+            root.mkdir()
+            (root / "sentinel").write_text("keep")
 
-                        with mock.patch("os.link", side_effect=race_marker):
-                            with self.assertRaisesRegex(RuntimeLayoutError, "appeared"):
-                                claim_install_root(root)
-                    self.assertNotEqual(
-                        marker.read_text() if marker.exists() else None,
-                        f"{INSTALL_MARKER_VALUE}\n",
-                    )
-
-    def test_claim_accepts_only_an_exact_safe_legacy_root(self):
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            safe = base / "safe"
-            unsafe = base / "unsafe"
-            safe.mkdir()
-            unsafe.mkdir()
-            copy_legacy_runtime(safe)
-            copy_legacy_runtime(unsafe)
-            (unsafe / "user-sentinel").write_text("keep")
-
-            claim_install_root(safe, allow_legacy=True)
             with self.assertRaisesRegex(RuntimeLayoutError, "non-empty"):
-                claim_install_root(unsafe, allow_legacy=True)
+                claim_install_root(root)
 
-            self.assertEqual(
-                (safe / INSTALL_MARKER_NAME).read_text(),
-                f"{INSTALL_MARKER_VALUE}\n",
-            )
-            self.assertFalse((unsafe / INSTALL_MARKER_NAME).exists())
-            self.assertEqual((unsafe / "user-sentinel").read_text(), "keep")
+            self.assertFalse((root / INSTALL_MARKER_NAME).exists())
+            self.assertEqual((root / "sentinel").read_text(), "keep")
 
     def test_claim_rejects_home_inside_the_python_trust_boundary(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -295,66 +255,19 @@ class RuntimeInstallerTests(unittest.TestCase):
                     claim_install_root(home)
             self.assertFalse((home / INSTALL_MARKER_NAME).exists())
 
-    def test_claim_recovers_its_interrupted_hard_link_creation(self):
+    def test_claim_is_idempotent_on_an_owned_root(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            marker = root / INSTALL_MARKER_NAME
-            leftover = root / ".llm-hud-claim-interrupted"
-            marker.write_text(f"{INSTALL_MARKER_VALUE}\n")
-            os.link(marker, leftover)
-            self.assertEqual(marker.stat().st_nlink, 2)
+            root = Path(directory) / "runtime"
+            root.mkdir()
 
             claim_install_root(root)
-
-            self.assertFalse(leftover.exists())
-            self.assertEqual(marker.stat().st_nlink, 1)
-
-    def test_claim_recovers_only_a_complete_orphaned_claim_temp(self):
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            complete = base / "complete"
-            partial = base / "partial"
-            complete.mkdir()
-            partial.mkdir()
-            complete_temp = complete / ".llm-hud-claim-interrupted"
-            partial_temp = partial / ".llm-hud-claim-notes"
-            complete_temp.write_text(f"{INSTALL_MARKER_VALUE}\n")
-            partial_temp.write_text("")
-
-            claim_install_root(complete)
-            with self.assertRaisesRegex(RuntimeLayoutError, "non-empty"):
-                claim_install_root(partial)
-
-            self.assertFalse(complete_temp.exists())
-            self.assertTrue((complete / INSTALL_MARKER_NAME).exists())
-            self.assertTrue(partial_temp.exists())
-            self.assertFalse((partial / INSTALL_MARKER_NAME).exists())
-
-    def test_claim_does_not_recover_a_live_concurrent_transaction(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            marker = root / INSTALL_MARKER_NAME
-            temp = root / ".llm-hud-claim-live"
-            temp.write_text(f"{INSTALL_MARKER_VALUE}\n")
-            descriptor = os.open(temp, os.O_RDWR)
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            try:
-                with self.assertRaisesRegex(RuntimeLayoutError, "non-empty"):
-                    claim_install_root(root)
-                self.assertTrue(temp.exists())
-                self.assertFalse(marker.exists())
-
-                os.link(temp, marker)
-                with self.assertRaisesRegex(RuntimeLayoutError, "single-link"):
-                    claim_install_root(root)
-                self.assertTrue(temp.exists())
-                self.assertTrue(marker.exists())
-            finally:
-                os.close(descriptor)
-
+            (root / "versions").mkdir()  # later content must not block reclaim
             claim_install_root(root)
-            self.assertFalse(temp.exists())
-            self.assertEqual(marker.stat().st_nlink, 1)
+
+            self.assertEqual(
+                (root / INSTALL_MARKER_NAME).read_text(),
+                f"{INSTALL_MARKER_VALUE}\n",
+            )
 
     def test_legacy_launcher_uses_the_historical_byte_format(self):
         content = installer_module._legacy_launcher_content(
@@ -725,39 +638,17 @@ class RuntimeInstallerTests(unittest.TestCase):
             self.assertFalse(sentinel.exists())
             self.assertTrue((root / ".llm-hud-stable.json").is_file())
 
-    def test_flat_legacy_dispatcher_can_be_migrated_once(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "runtime"
-            root.mkdir()
-            owned_root(root)
-            copy_runtime_checkout(root)
-            legacy = (root / "bin" / "llm-hud").read_bytes()
-
-            metadata, activation = install_versioned_runtime(
-                ROOT, root, allow_legacy_dispatcher=True
-            )
-
-            self.assertEqual(activation.active, metadata.release_id)
-            self.assertIsNone(activation.previous)
-            self.assertNotEqual((root / "bin" / "llm-hud").read_bytes(), legacy)
-            self.assertTrue((root / "src" / "llm_hud" / "cli.py").is_file())
-
     def test_partial_stable_v1_install_is_repaired_from_frozen_sources(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "runtime"
             root.mkdir()
-            copy_runtime_checkout(root)
             owned_root(root)
             initialize_layout(root)
             tools = installer_module.load_stable_tools(ROOT)
             (root / "control").mkdir()
             (root / "control" / "runtime_control.py").write_text(tools.control)
 
-            metadata, _ = install_versioned_runtime(
-                ROOT,
-                root,
-                allow_legacy_dispatcher=True,
-            )
+            metadata, _ = install_versioned_runtime(ROOT, root)
 
             current = read_activation(root)
             assert current is not None
@@ -779,7 +670,6 @@ class RuntimeInstallerTests(unittest.TestCase):
                 with self.subTest(label=label):
                     root = base / label
                     root.mkdir()
-                    copy_runtime_checkout(root)
                     owned_root(root)
                     initialize_layout(root)
                     (root / "control").mkdir()
@@ -787,20 +677,12 @@ class RuntimeInstallerTests(unittest.TestCase):
                     orphan.write_text(content)
 
                     if succeeds:
-                        install_versioned_runtime(
-                            ROOT,
-                            root,
-                            allow_legacy_dispatcher=True,
-                        )
+                        install_versioned_runtime(ROOT, root)
                         self.assertFalse(orphan.exists())
                         self.assertTrue((root / ".llm-hud-stable.json").exists())
                     else:
                         with self.assertRaisesRegex(RuntimeLayoutError, "unrecognized"):
-                            install_versioned_runtime(
-                                ROOT,
-                                root,
-                                allow_legacy_dispatcher=True,
-                            )
+                            install_versioned_runtime(ROOT, root)
                         self.assertEqual(orphan.read_text(), "user data")
                         self.assertFalse((root / "activation").exists())
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import json
 import os
@@ -53,15 +52,11 @@ _SHA256 = frozenset("0123456789abcdef")
 MANAGED_LAUNCHER_MARKER = "# llm-hud-managed-launcher-v1"
 MAX_LAUNCHER_SIZE = 64 * 1024
 LAUNCHER_TEMP_PREFIX = ".llm-hud-launcher-"
-CLAIM_TEMP_PREFIX = ".llm-hud-claim-"
 STABLE_V1_DISPATCHER_SHA256 = (
     "79157470c26c620581cf69d701434e2ff2c0d6fd21744e8731b6eec99c7c7a2a"
 )
 STABLE_V1_CONTROL_SHA256 = (
     "77ed3c4ad64577040f3984c814cd803ba9d706134fd2807bff760ff2e3633040"
-)
-LEGACY_FLAT_DISPATCHER_SHA256 = (
-    "e4cdde9c0b70b8cf507b4f7aae24327486256390096d55ad0f0c6aa76c6ca922"
 )
 
 
@@ -140,214 +135,7 @@ def _dangerous_install_roots() -> set[Path]:
     return resolved
 
 
-def _root_entries(
-    root: Path,
-    *,
-    ignored: frozenset[str] = frozenset(),
-) -> dict[str, tuple[int, int, int, int]]:
-    try:
-        entries = list(os.scandir(root))
-    except OSError as error:
-        raise RuntimeLayoutError(f"cannot inspect install root {root}: {error}") from error
-    snapshot: dict[str, tuple[int, int, int, int]] = {}
-    for entry in entries:
-        if entry.name in ignored:
-            continue
-        path = Path(entry.path)
-        metadata = _metadata(path, "install root entry")
-        snapshot[entry.name] = (
-            metadata.st_dev,
-            metadata.st_ino,
-            metadata.st_mode,
-            metadata.st_nlink,
-        )
-    return snapshot
-
-
-def _legacy_install_root_is_safe(
-    root: Path,
-    *,
-    ignored: frozenset[str] = frozenset(),
-) -> bool:
-    if set(_root_entries(root, ignored=ignored)) != set(RUNTIME_CONTENT):
-        return False
-    source_digest(root)
-    if embedded_runtime_version(root) != "0.1.0":
-        return False
-    launcher = _metadata(root / DISPATCHER_DESTINATION, "legacy dispatcher")
-    if not stat.S_ISREG(launcher.st_mode) or launcher.st_nlink != 1:
-        return False
-    return (
-        _sha256(_read_regular_bytes(root / DISPATCHER_DESTINATION, "legacy dispatcher"))
-        == LEGACY_FLAT_DISPATCHER_SHA256
-    )
-
-
-def _unlink_matching_file(path: Path, identity: tuple[int, int]) -> None:
-    try:
-        metadata = path.lstat()
-    except OSError:
-        return
-    if (metadata.st_dev, metadata.st_ino) != identity:
-        return
-    try:
-        path.unlink()
-    except OSError:
-        pass
-
-
-def _claim_marker_exclusively(
-    root: Path,
-    marker: Path,
-    baseline: dict[str, tuple[int, int, int, int]],
-) -> None:
-    descriptor, temp_name = tempfile.mkstemp(prefix=CLAIM_TEMP_PREFIX, dir=root)
-    temp = Path(temp_name)
-    temp_identity: tuple[int, int] | None = None
-    marker_created = False
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        payload = f"{INSTALL_MARKER_VALUE}\n".encode("utf-8")
-        remaining = memoryview(payload)
-        while remaining:
-            written = os.write(descriptor, remaining)
-            if written <= 0:
-                raise OSError("short write while claiming install root")
-            remaining = remaining[written:]
-        os.fchmod(descriptor, 0o600)
-        os.fsync(descriptor)
-        metadata = os.fstat(descriptor)
-        temp_identity = (metadata.st_dev, metadata.st_ino)
-        if _root_entries(root, ignored=frozenset({temp.name})) != baseline:
-            raise RuntimeLayoutError("install root changed while claiming ownership")
-        try:
-            os.link(temp, marker, follow_symlinks=False)
-            marker_created = True
-        except FileExistsError as error:
-            raise RuntimeLayoutError(
-                f"install marker appeared while claiming ownership: {marker}"
-            ) from error
-        except OSError as error:
-            raise RuntimeLayoutError(f"cannot create install marker {marker}: {error}") from error
-        if _root_entries(
-            root,
-            ignored=frozenset({temp.name, marker.name}),
-        ) != baseline:
-            raise RuntimeLayoutError("install root changed while claiming ownership")
-        try:
-            temp.unlink()
-        except FileNotFoundError:
-            marker_metadata = marker.lstat()
-            if (
-                (marker_metadata.st_dev, marker_metadata.st_ino) != temp_identity
-                or marker_metadata.st_nlink != 1
-            ):
-                raise RuntimeLayoutError(
-                    "ownership claim changed before it could be committed"
-                )
-        temp_identity = None
-        fsync_directory(root)
-    finally:
-        if temp_identity is not None:
-            if marker_created:
-                _unlink_matching_file(marker, temp_identity)
-            _unlink_matching_file(temp, temp_identity)
-        try:
-            os.close(descriptor)
-        except OSError:
-            pass
-
-
-def _lock_recovery_file(
-    path: Path,
-    *,
-    expected_links: int,
-) -> int | None:
-    flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        before = path.lstat()
-        descriptor = os.open(path, flags)
-        opened = os.fstat(descriptor)
-    except OSError:
-        return None
-    if (
-        not stat.S_ISREG(before.st_mode)
-        or before.st_nlink != expected_links
-        or not stat.S_ISREG(opened.st_mode)
-        or opened.st_nlink != expected_links
-        or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
-    ):
-        os.close(descriptor)
-        return None
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        os.close(descriptor)
-        return None
-    except OSError:
-        os.close(descriptor)
-        return None
-    return descriptor
-
-
-def _read_locked_file(descriptor: int, limit: int) -> bytes:
-    os.lseek(descriptor, 0, os.SEEK_SET)
-    chunks: list[bytes] = []
-    remaining = limit + 1
-    while remaining:
-        chunk = os.read(descriptor, remaining)
-        if not chunk:
-            break
-        chunks.append(chunk)
-        remaining -= len(chunk)
-    return b"".join(chunks)
-
-
-def _recover_orphaned_claim_temp(root: Path, *, allow_legacy: bool) -> None:
-    try:
-        entries = list(os.scandir(root))
-    except OSError as error:
-        raise RuntimeLayoutError(f"cannot inspect install root {root}: {error}") from error
-    matches = [
-        Path(entry.path)
-        for entry in entries
-        if entry.name.startswith(CLAIM_TEMP_PREFIX)
-    ]
-    if len(matches) != 1:
-        return
-    temp = matches[0]
-    try:
-        metadata = temp.lstat()
-    except OSError:
-        return
-    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-        return
-    descriptor = _lock_recovery_file(temp, expected_links=1)
-    if descriptor is None:
-        return
-    try:
-        expected = f"{INSTALL_MARKER_VALUE}\n".encode("utf-8")
-        content = _read_locked_file(descriptor, len(expected))
-        if content != expected:
-            return
-        remaining = _root_entries(root, ignored=frozenset({temp.name}))
-        if remaining and not (
-            allow_legacy
-            and _legacy_install_root_is_safe(root, ignored=frozenset({temp.name}))
-        ):
-            return
-        identity = (metadata.st_dev, metadata.st_ino)
-        _unlink_matching_file(temp, identity)
-        if temp.exists() or temp.is_symlink():
-            raise RuntimeLayoutError(
-                f"cannot recover interrupted ownership claim: {temp}"
-            )
-        fsync_directory(root)
-    finally:
-        os.close(descriptor)
-
-
-def claim_install_root(root: Path, *, allow_legacy: bool = False) -> None:
+def claim_install_root(root: Path) -> None:
     root = _validate_launcher_path(Path(root), "install root")
     metadata = _metadata(root, "install root")
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
@@ -361,6 +149,7 @@ def claim_install_root(root: Path, *, allow_legacy: bool = False) -> None:
         raise RuntimeLayoutError(f"refusing unsafe install root: {canonical_root}")
     root = canonical_root
     marker = root / INSTALL_MARKER_NAME
+    payload = f"{INSTALL_MARKER_VALUE}\n".encode("utf-8")
     try:
         marker.lstat()
     except FileNotFoundError:
@@ -368,32 +157,40 @@ def claim_install_root(root: Path, *, allow_legacy: bool = False) -> None:
     except OSError as error:
         raise RuntimeLayoutError(f"cannot inspect install marker {marker}: {error}") from error
     else:
-        _recover_linked_claim_temp(root, marker)
         content = _read_regular_bytes(marker, "install marker")
     if content is not None:
-        if content != f"{INSTALL_MARKER_VALUE}\n".encode("utf-8"):
+        if content != payload:
             raise RuntimeLayoutError(f"unrecognized install marker: {marker}")
         return
-    _recover_orphaned_claim_temp(root, allow_legacy=allow_legacy)
-    baseline = _root_entries(root)
-    if baseline and not (allow_legacy and _legacy_install_root_is_safe(root)):
-        raise RuntimeLayoutError(f"refusing non-empty unmanaged install root: {root}")
     try:
-        _claim_marker_exclusively(root, marker, baseline)
-    except RuntimeLayoutError as error:
-        # A concurrent installer may have won the claim race; accept the root
-        # when its valid marker landed, otherwise surface the refusal.
-        try:
-            content = _read_regular_bytes(marker, "concurrent install marker")
-        except RuntimeLayoutError:
-            raise error
-        if content != f"{INSTALL_MARKER_VALUE}\n".encode("utf-8"):
-            raise error
+        entries = list(os.scandir(root))
+    except OSError as error:
+        raise RuntimeLayoutError(f"cannot inspect install root {root}: {error}") from error
+    if entries:
+        raise RuntimeLayoutError(f"refusing non-empty unmanaged install root: {root}")
+    # O_EXCL guarantees exactly one concurrent claimer creates the marker;
+    # losers accept the root when the winner's valid marker landed.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(marker, flags, 0o600)
+    except FileExistsError:
+        if _read_regular_bytes(marker, "concurrent install marker") != payload:
+            raise RuntimeLayoutError(f"unrecognized install marker: {marker}")
         return
-    if _read_regular_bytes(marker, "install marker") != (
-        f"{INSTALL_MARKER_VALUE}\n".encode("utf-8")
-    ):
-        raise RuntimeLayoutError(f"cannot verify install marker: {marker}")
+    except OSError as error:
+        raise RuntimeLayoutError(
+            f"cannot create install marker {marker}: {error}"
+        ) from error
+    try:
+        os.write(descriptor, payload)
+        os.fsync(descriptor)
+    except OSError as error:
+        raise RuntimeLayoutError(
+            f"cannot write install marker {marker}: {error}"
+        ) from error
+    finally:
+        os.close(descriptor)
+    fsync_directory(root)
 
 
 def _read_regular_bytes(
@@ -438,66 +235,6 @@ def _read_regular_bytes(
 
 def _sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
-
-
-def _recover_linked_claim_temp(root: Path, marker: Path) -> None:
-    try:
-        marker_metadata = marker.lstat()
-    except OSError:
-        return
-    if not stat.S_ISREG(marker_metadata.st_mode) or marker_metadata.st_nlink != 2:
-        return
-    content = _read_regular_bytes(
-        marker,
-        "interrupted install marker",
-        expected_links=2,
-    )
-    if content != f"{INSTALL_MARKER_VALUE}\n".encode("utf-8"):
-        return
-    matches: list[Path] = []
-    try:
-        entries = list(os.scandir(root))
-    except OSError:
-        return
-    for entry in entries:
-        if not entry.name.startswith(CLAIM_TEMP_PREFIX):
-            continue
-        path = Path(entry.path)
-        try:
-            metadata = path.lstat()
-        except OSError:
-            continue
-        if (
-            stat.S_ISREG(metadata.st_mode)
-            and metadata.st_nlink == 2
-            and (metadata.st_dev, metadata.st_ino)
-            == (marker_metadata.st_dev, marker_metadata.st_ino)
-        ):
-            matches.append(path)
-    if len(matches) != 1:
-        return
-    descriptor = _lock_recovery_file(matches[0], expected_links=2)
-    if descriptor is None:
-        return
-    remaining = _root_entries(
-        root,
-        ignored=frozenset({marker.name, matches[0].name}),
-    )
-    try:
-        if remaining and not _legacy_install_root_is_safe(
-            root,
-            ignored=frozenset({marker.name, matches[0].name}),
-        ):
-            return
-        try:
-            matches[0].unlink()
-        except OSError as error:
-            raise RuntimeLayoutError(
-                f"cannot recover interrupted install marker {marker}: {error}"
-            ) from error
-        fsync_directory(root)
-    finally:
-        os.close(descriptor)
 
 
 def _validate_launcher_path(path: Path, description: str) -> Path:
@@ -999,7 +736,6 @@ def _preflight_stable_tools(
     root: Path,
     tools: StableTools,
     *,
-    allow_legacy_dispatcher: bool,
     recover_temps: bool = False,
 ) -> None:
     _preflight_stable_directories(root)
@@ -1019,8 +755,6 @@ def _preflight_stable_tools(
     )
     if state is None:
         allowed_dispatchers: set[str | None] = {None, tools.dispatcher_sha256}
-        if allow_legacy_dispatcher:
-            allowed_dispatchers.add(LEGACY_FLAT_DISPATCHER_SHA256)
         if dispatcher_hash not in allowed_dispatchers:
             raise RuntimeLayoutError(
                 f"refusing to replace unmanaged stable dispatcher: {dispatcher_path}"
@@ -1069,13 +803,10 @@ def _preflight_stable_tools(
 def _install_stable_tools_unlocked(
     root: Path,
     tools: StableTools,
-    *,
-    allow_legacy_dispatcher: bool,
 ) -> None:
     _preflight_stable_tools(
         root,
         tools,
-        allow_legacy_dispatcher=allow_legacy_dispatcher,
         recover_temps=True,
     )
     _require_regular_directory(root / "bin", "stable bin directory")
@@ -1117,14 +848,11 @@ def install_stable_tools(
     root: Path,
     *,
     expected_active: str,
-    allow_legacy_dispatcher: bool = False,
 ) -> None:
     source = Path(source)
     root = Path(root).resolve(strict=True)
     tools = load_stable_tools(source)
-    _preflight_stable_tools(
-        root, tools, allow_legacy_dispatcher=allow_legacy_dispatcher
-    )
+    _preflight_stable_tools(root, tools)
     with RuntimeLock(root):
         current = read_activation(root)
         actual_active = current.active if current is not None else None
@@ -1132,9 +860,7 @@ def install_stable_tools(
             raise RuntimeLayoutError(
                 f"active runtime changed from {expected_active!r} to {actual_active!r}"
             )
-        _install_stable_tools_unlocked(
-            root, tools, allow_legacy_dispatcher=allow_legacy_dispatcher
-        )
+        _install_stable_tools_unlocked(root, tools)
 
 
 def install_external_launcher(
@@ -1596,15 +1322,11 @@ def install_versioned_runtime(
     source: Path,
     root: Path,
     python: Path | None = None,
-    *,
-    allow_legacy_dispatcher: bool = False,
 ) -> tuple[RuntimeMetadata, Activation]:
     source = Path(source)
     root = Path(root)
     tools = load_stable_tools(source)
-    _preflight_stable_tools(
-        root, tools, allow_legacy_dispatcher=allow_legacy_dispatcher
-    )
+    _preflight_stable_tools(root, tools)
     activation_before = _read_existing_activation(root)
     metadata, activation = install_runtime_from_source(
         source,
@@ -1617,7 +1339,6 @@ def install_versioned_runtime(
             source,
             root,
             expected_active=metadata.release_id,
-            allow_legacy_dispatcher=allow_legacy_dispatcher,
         )
     except Exception as error:
         _restore_after_install_failure(
@@ -1691,8 +1412,6 @@ def install_complete(
     root: Path,
     launcher: Path,
     python: Path,
-    *,
-    allow_legacy_dispatcher: bool = False,
 ) -> tuple[RuntimeMetadata, Activation]:
     source = Path(source)
     root = Path(root)
@@ -1707,7 +1426,6 @@ def install_complete(
         source,
         root,
         python,
-        allow_legacy_dispatcher=allow_legacy_dispatcher,
     )
     root = root.resolve(strict=True)
     try:
@@ -1741,8 +1459,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--python", type=Path, required=True)
     parser.add_argument("--checkout", action="store_true")
     parser.add_argument("--claim-root", action="store_true")
-    parser.add_argument("--allow-legacy-root", action="store_true")
-    parser.add_argument("--allow-legacy-dispatcher", action="store_true")
     return parser
 
 
@@ -1758,13 +1474,12 @@ def main(arguments: list[str] | None = None) -> int:
             print("checkout")
             return 0
         if args.claim_root:
-            claim_install_root(args.root, allow_legacy=args.allow_legacy_root)
+            claim_install_root(args.root)
         metadata, _ = install_complete(
             args.source,
             args.root,
             args.launcher,
             args.python,
-            allow_legacy_dispatcher=args.allow_legacy_dispatcher,
         )
     except (OSError, RuntimeLayoutError) as error:
         print(f"llm-hud installer: {error}", file=sys.stderr)

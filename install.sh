@@ -66,33 +66,6 @@ directory_is_empty() {
   return 0
 }
 
-claim_recovery_shape() {
-  count=0
-  set -- "$1"/* "$1"/.[!.]* "$1"/..?*
-  for entry do
-    [ -e "$entry" ] || [ -L "$entry" ] || continue
-    case "${entry##*/}" in
-      .llm-hud-claim-*)
-        [ ! -L "$entry" ] && [ -f "$entry" ] || return 1
-        count=$((count + 1))
-        ;;
-      *) return 1 ;;
-    esac
-  done
-  [ "$count" -eq 1 ]
-}
-
-legacy_runtime_shape() {
-  [ ! -e "$1/install.sh" ] &&
-    [ ! -d "$1/.git" ] &&
-    [ ! -d "$1/tests" ] &&
-    [ -f "$1/src/llm_hud/cli.py" ] &&
-    [ -f "$1/bin/llm-hud" ] &&
-    [ -f "$1/README.md" ] &&
-    [ -f "$1/LICENSE" ] &&
-    [ -f "$1/pyproject.toml" ]
-}
-
 find_python() {
   for candidate in python3.13 python3.12 python3.11 python3; do
     if command -v "$candidate" >/dev/null 2>&1 &&
@@ -252,16 +225,12 @@ fi
 bin_dir=$canonical_result
 reject_line_break canonical-bin-dir "$bin_dir"
 launcher_path="$bin_dir/llm-hud"
-legacy_flat=0
-legacy_unmarked=0
 installer_bootstrap='import runpy
 import sys
 sys.path.insert(0, sys.argv.pop(1))
 runpy.run_module("llm_hud.installer", run_name="__main__")'
 
 if [ "$source_root" != "$install_root" ]; then
-  # Existing 0.1.0 installations predate the marker, so recognize their full
-  # flat runtime shape once and adopt only the canonical default directory.
   home_root=""
   home_local_root=""
   home_local_share_root=""
@@ -286,12 +255,6 @@ if [ "$source_root" != "$install_root" ]; then
       ;;
   esac
 
-  legacy_default_root=""
-  if [ -d "$HOME/.local/share/llm-hud" ]; then
-    if canonical_directory "$HOME/.local/share/llm-hud"; then
-      legacy_default_root=$canonical_result
-    fi
-  fi
   install_marker="$install_root/$install_marker_name"
   if [ -L "$install_marker" ]; then
     printf '%s\n' "Refusing symlink install marker: $install_marker" >&2
@@ -305,34 +268,18 @@ if [ "$source_root" != "$install_root" ]; then
       printf '%s\n' "Refusing unrecognized install marker: $install_marker" >&2
       exit 1
     fi
-    if legacy_runtime_shape "$install_root"; then
-      legacy_flat=1
-    fi
-  elif [ "$install_root" = "$legacy_default_root" ] &&
-    legacy_runtime_shape "$install_root"; then
-    legacy_flat=1
-    legacy_unmarked=1
-  elif claim_recovery_shape "$install_root"; then
-    : # Python verifies and repairs the interrupted exclusive ownership claim.
   elif ! directory_is_empty "$install_root"; then
     printf '%s\n' "Refusing non-empty unmanaged install directory: $install_root" >&2
     printf '%s\n' "Choose an empty directory dedicated to llm-hud." >&2
     exit 1
   fi
 
-  set -- \
+  "$python_bin" -I -B -c "$installer_bootstrap" "$source_root/src" \
     --source "$source_root" \
     --root "$install_root" \
     --launcher "$launcher_path" \
     --python "$python_bin" \
     --claim-root
-  if [ "$legacy_flat" -eq 1 ]; then
-    set -- "$@" --allow-legacy-dispatcher
-  fi
-  if [ "$legacy_unmarked" -eq 1 ]; then
-    set -- "$@" --allow-legacy-root
-  fi
-  "$python_bin" -I -B -c "$installer_bootstrap" "$source_root/src" "$@"
 else
   "$python_bin" -I -B -c "$installer_bootstrap" "$source_root/src" \
     --source "$source_root" \

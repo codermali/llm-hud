@@ -11,25 +11,13 @@ import unittest
 from pathlib import Path
 
 from llm_hud._version import __version__
-from llm_hud.runtime import initialize_layout, read_activation, validate_runtime
+from llm_hud.runtime import read_activation, validate_runtime
 
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "install.sh"
 MARKER = ".llm-hud-install-root"
 LAYOUT = ".llm-hud-layout"
-
-
-def make_legacy_runtime(install_dir: Path) -> None:
-    for name in ("src", "bin"):
-        shutil.copytree(ROOT / name, install_dir / name)
-    for name in ("README.md", "LICENSE", "pyproject.toml"):
-        shutil.copy2(ROOT / name, install_dir / name)
-    # Flat legacy installs are by definition version 0.1.0 on disk; the
-    # adoption check pins that version, so the fixture must too.
-    (install_dir / "src" / "llm_hud" / "_version.py").write_text(
-        '__version__ = "0.1.0"\n'
-    )
 
 
 def make_source_archive(archive: Path) -> None:
@@ -324,61 +312,27 @@ class InstallerRootSafetyTests(unittest.TestCase):
             self.assertIn("Refusing non-empty unmanaged install directory", result.stderr)
             self.assertEqual(sentinel.read_text(), "keep")
 
-    def test_adopts_an_unmarked_legacy_installation(self):
+    def test_refuses_a_flat_legacy_installation(self):
+        # Flat 0.1.0 layouts are no longer adopted: the directory is simply
+        # a non-empty unmanaged root and must be cleared and reinstalled.
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             install_dir = root / "home" / ".local" / "share" / "llm-hud"
             install_dir.mkdir(parents=True)
-            make_legacy_runtime(install_dir)
+            for name in ("src", "bin"):
+                shutil.copytree(ROOT / name, install_dir / name)
+            for name in ("README.md", "LICENSE", "pyproject.toml"):
+                shutil.copy2(ROOT / name, install_dir / name)
 
             result = run_installer(root, install_dir)
 
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertTrue((install_dir / MARKER).is_file())
-            activation = read_activation(install_dir)
-            assert activation is not None
-            self.assertIsNone(activation.previous)
-            self.assertTrue((install_dir / "src" / "llm_hud" / "cli.py").is_file())
-
-    def test_migrates_a_marked_flat_legacy_installation(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            install_dir = root / "runtime"
-            install_dir.mkdir()
-            make_legacy_runtime(install_dir)
-            (install_dir / MARKER).write_text("llm-hud-install-root-v1\n")
-
-            result = run_installer(root, install_dir)
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            activation = read_activation(install_dir)
-            assert activation is not None
-            self.assertIsNone(activation.previous)
-
-    def test_resumes_a_legacy_migration_after_layout_initialization(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            install_dir = root / "home" / ".local" / "share" / "llm-hud"
-            install_dir.mkdir(parents=True)
-            make_legacy_runtime(install_dir)
-            (install_dir / MARKER).write_text("llm-hud-install-root-v1\n")
-            initialize_layout(install_dir)
-            launcher = root / "launcher-bin" / "llm-hud"
-            launcher.parent.mkdir()
-            launcher.write_text(
-                "#!/bin/sh\n"
-                f"exec '{sys.executable}' "
-                f"'{install_dir.resolve() / 'bin' / 'llm-hud'}' \"$@\"\n"
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "Refusing non-empty unmanaged install directory", result.stderr
             )
-            launcher.chmod(0o755)
+            self.assertFalse((install_dir / MARKER).exists())
 
-            result = run_installer(root, install_dir)
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("llm-hud-managed-launcher-v1", launcher.read_text())
-            self.assertIsNotNone(read_activation(install_dir))
-
-    def test_does_not_adopt_a_source_tree_as_a_legacy_installation(self):
+    def test_refuses_a_source_tree_as_an_install_root(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             install_dir = root / "checkout"
