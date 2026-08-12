@@ -140,6 +140,27 @@ def _resets_at(window: object) -> float | None:
     return float(value) if isinstance(value, (int, float)) else None
 
 
+def _terminal_columns(payload: dict[str, Any]) -> int | None:
+    # Claude Code passes the terminal size to the status line command through
+    # the COLUMNS/LINES environment variables; the JSON payload has no
+    # terminal field.  The payload lookup stays as a fallback for callers that
+    # still provide one.
+    raw = os.environ.get("COLUMNS")
+    if raw is not None:
+        try:
+            columns = int(raw)
+        except ValueError:
+            pass
+        else:
+            if columns > 0:
+                return columns
+    terminal = payload.get("terminal")
+    columns = terminal.get("columns") if isinstance(terminal, dict) else None
+    if isinstance(columns, bool) or not isinstance(columns, int):
+        return None
+    return columns
+
+
 def snapshot_from_payload(payload: dict[str, Any]) -> HudSnapshot:
     model = payload.get("model")
     model_name = model.get("display_name") if isinstance(model, dict) else None
@@ -149,11 +170,6 @@ def snapshot_from_payload(payload: dict[str, Any]) -> HudSnapshot:
     cwd = workspace_dir if isinstance(workspace_dir, str) else payload.get("cwd")
     if not isinstance(cwd, str):
         cwd = None
-
-    terminal = payload.get("terminal")
-    columns = terminal.get("columns") if isinstance(terminal, dict) else None
-    if not isinstance(columns, int):
-        columns = None
 
     limits = payload.get("rate_limits")
     limits = limits if isinstance(limits, dict) else {}
@@ -166,7 +182,7 @@ def snapshot_from_payload(payload: dict[str, Any]) -> HudSnapshot:
         model=model_name if isinstance(model_name, str) else None,
         cwd=cwd,
         windows=windows,
-        columns=columns,
+        columns=_terminal_columns(payload),
     )
 
 

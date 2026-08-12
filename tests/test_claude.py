@@ -48,6 +48,7 @@ class ClaudeProviderTests(unittest.TestCase):
                 LLM_HUD_HOME=str(root),
                 LLM_HUD_CLAUDE_SETTINGS=str(settings),
                 LLM_HUD_STATE_DIR=str(state),
+                COLUMNS=None,
             ):
                 provider = ClaudeProvider()
                 result = provider.install("/opt/llm-hud")
@@ -107,6 +108,7 @@ class ClaudeProviderTests(unittest.TestCase):
             with Environment(
                 LLM_HUD_CLAUDE_SETTINGS=str(settings),
                 LLM_HUD_STATE_DIR=str(root / "state"),
+                COLUMNS=None,
             ):
                 provider = ClaudeProvider()
                 provider.install("/opt/llm-hud")
@@ -384,6 +386,44 @@ class ClaudeProviderTests(unittest.TestCase):
                 output = render(b'{"model":{"display_name":"Opus"}}', color=False)
 
             self.assertTrue(output.startswith("Claude · Opus\n"))
+
+    def test_terminal_width_comes_from_the_columns_variable(self):
+        raw = json.dumps(
+            {
+                "model": {"display_name": "Opus"},
+                "rate_limits": {
+                    "five_hour": {"used_percentage": 24},
+                    "seven_day": {"used_percentage": 41},
+                },
+            }
+        ).encode()
+        wide = (
+            "Claude · Opus\n"
+            "5h  ████████░░   76%    7d  ██████░░░░   59%"
+        )
+        narrow = (
+            "Claude · Opus\n"
+            "5h  ████████░░   76%\n"
+            "7d  ██████░░░░   59%"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = {
+                "LLM_HUD_CLAUDE_SETTINGS": str(root / "settings.json"),
+                "LLM_HUD_STATE_DIR": str(root / "state"),
+            }
+            with Environment(**base, COLUMNS="45"):
+                self.assertEqual(render(raw, color=False), wide)
+            with Environment(**base, COLUMNS="40"):
+                self.assertEqual(render(raw, color=False), narrow)
+            with Environment(**base, COLUMNS="not-a-number"):
+                fallback = json.loads(raw)
+                fallback["terminal"] = {"columns": 40}
+                self.assertEqual(
+                    render(json.dumps(fallback).encode(), color=False), narrow
+                )
+            with Environment(**base, COLUMNS=None):
+                self.assertEqual(render(raw, color=False), wide)
 
     def test_install_and_uninstall_preserve_a_relative_settings_symlink(self):
         with tempfile.TemporaryDirectory() as directory:
