@@ -498,44 +498,6 @@ def clear_activation(
             ) from error
 
 
-def _rollback_unlocked(
-    root: Path, *, expected_active: str | None | object = _UNSET
-) -> Activation:
-    current = read_activation(root)
-    actual_active = current.active if current is not None else None
-    if expected_active is not _UNSET:
-        if expected_active is not None:
-            validate_release_id(expected_active)
-        if actual_active != expected_active:
-            raise RuntimeLayoutError(
-                f"active runtime changed from {expected_active!r} to {actual_active!r}"
-            )
-    if current is None or current.previous is None:
-        raise RuntimeLayoutError("no previous runtime is available")
-    validate_runtime(root, current.previous)
-    updated = Activation(active=current.previous, previous=current.active)
-    try:
-        atomic_write_text(
-            root / ACTIVATION_NAME,
-            format_activation(updated),
-            mode=0o600,
-            follow_symlinks=False,
-        )
-    except OSError as error:
-        raise RuntimeLayoutError(f"cannot write activation record: {error}") from error
-    return updated
-
-
-def rollback(
-    root: Path,
-    *,
-    expected_active: str | None | object = _UNSET,
-    lock_timeout: float = 10.0,
-) -> Activation:
-    with RuntimeLock(root, timeout=lock_timeout):
-        return _rollback_unlocked(root, expected_active=expected_active)
-
-
 def _read_source_file(path: Path) -> tuple[bytes, bool]:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -830,28 +792,6 @@ def finalize_runtime(
             version,
             expected_content_sha256=expected_content_sha256,
         )
-
-
-def install_staged_runtime(
-    root: Path,
-    staging: Path,
-    version: str,
-    *,
-    expected_content_sha256: str | None = None,
-    expected_active: str | None | object = _UNSET,
-    lock_timeout: float = 10.0,
-) -> tuple[RuntimeMetadata, Activation]:
-    with RuntimeLock(root, timeout=lock_timeout):
-        metadata = _finalize_runtime_unlocked(
-            root,
-            staging,
-            version,
-            expected_content_sha256=expected_content_sha256,
-        )
-        activation = _activate_unlocked(
-            root, metadata.release_id, expected_active=expected_active
-        )
-        return metadata, activation
 
 
 class RuntimeLock:

@@ -23,10 +23,8 @@ from llm_hud.runtime import (
     finalize_runtime,
     format_activation,
     initialize_layout,
-    install_staged_runtime,
     parse_activation,
     read_activation,
-    rollback,
     runtime_path,
     source_digest,
     validate_release_id,
@@ -91,7 +89,7 @@ class ActivationTests(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(RuntimeLayoutError):
                 parse_activation(text)
 
-    def test_activation_and_rollback_are_atomic_state_transitions(self):
+    def test_activation_is_an_atomic_state_transition(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             initialize_owned_layout(root)
@@ -103,8 +101,6 @@ class ActivationTests(unittest.TestCase):
             before = (root / ACTIVATION_NAME).read_bytes()
             self.assertEqual(activate(root, second), Activation(second, first))
             self.assertEqual((root / ACTIVATION_NAME).read_bytes(), before)
-            self.assertEqual(rollback(root), Activation(first, second))
-            self.assertEqual(read_activation(root), Activation(first, second))
 
     def test_invalid_runtime_does_not_change_activation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -173,35 +169,6 @@ class ActivationTests(unittest.TestCase):
             (runtime_path(root, second) / "README.md").write_text("tampered")
 
             self.assertEqual(activate(root, first), Activation(first))
-
-    def test_broken_previous_blocks_rollback_without_changing_activation(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            initialize_owned_layout(root)
-            first = create_runtime(root, "first", "1.0.0")
-            second = create_runtime(root, "second", "2.0.0")
-            activate(root, first)
-            activate(root, second)
-            (runtime_path(root, first) / "README.md").write_text("tampered")
-            before = (root / ACTIVATION_NAME).read_bytes()
-
-            with self.assertRaises(RuntimeLayoutError):
-                rollback(root)
-
-            self.assertEqual((root / ACTIVATION_NAME).read_bytes(), before)
-
-    def test_broken_current_runtime_can_roll_back_to_a_healthy_previous(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            initialize_owned_layout(root)
-            first = create_runtime(root, "first", "1.0.0")
-            second = create_runtime(root, "second", "2.0.0")
-            activate(root, first)
-            activate(root, second)
-            (runtime_path(root, second) / "README.md").write_text("tampered")
-
-            self.assertEqual(rollback(root), Activation(first, second))
-            self.assertEqual(read_activation(root), Activation(first, second))
 
     def test_expected_active_prevents_lost_update(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -394,25 +361,6 @@ class RuntimeSourceTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeLayoutError, "outside"):
                 finalize_runtime(root, outside, "1.0.0")
 
-    def test_install_staged_runtime_seals_and_activates_under_one_lock(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            initialize_owned_layout(root)
-            staging = stage_runtime(root, "candidate", "1.2.3")
-            digest = source_digest(staging)
-
-            metadata, activation = install_staged_runtime(
-                root,
-                staging,
-                "1.2.3",
-                expected_content_sha256=digest,
-                expected_active=None,
-            )
-
-            self.assertEqual(activation, Activation(metadata.release_id))
-            self.assertFalse(staging.exists())
-            self.assertEqual(validate_runtime(root, metadata.release_id), metadata)
-
     def test_runtime_tree_and_directories_are_synced_before_activation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -441,7 +389,8 @@ class RuntimeSourceTests(unittest.TestCase):
             ), mock.patch(
                 "llm_hud.runtime._activate_unlocked", side_effect=record_activate
             ):
-                install_staged_runtime(root, staging, "1.2.3")
+                metadata = finalize_runtime(root, staging, "1.2.3")
+                activate(root, metadata.release_id)
 
             self.assertEqual(
                 events,
@@ -454,14 +403,14 @@ class RuntimeSourceTests(unittest.TestCase):
                 ],
             )
 
-    def test_expected_content_mismatch_leaves_staging_and_activation_untouched(self):
+    def test_expected_content_mismatch_leaves_staging_untouched(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             initialize_owned_layout(root)
             staging = stage_runtime(root, "candidate", "1.2.3")
 
             with self.assertRaisesRegex(RuntimeLayoutError, "does not match"):
-                install_staged_runtime(
+                finalize_runtime(
                     root, staging, "1.2.3", expected_content_sha256="0" * 64
                 )
 
