@@ -10,9 +10,8 @@ import shlex
 import shutil
 import stat
 import subprocess
-import tempfile
-import time
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,9 +44,9 @@ from llm_hud.storage import atomic_write_text, fsync_directory
 
 
 STAGING_PREFIX = ".llm-hud-stage-"
-# Staging directories younger than this may belong to a live concurrent
-# install; older ones were orphaned by a crash and are safe to remove.
-STAGING_MAX_AGE_SECONDS = 3600.0
+# Only the install that created a staging directory may remove it, after
+# verifying its inode. Crash-orphaned stages intentionally remain: age alone
+# cannot distinguish an orphan from a slow concurrent install.
 RUNTIME_TRASH_PREFIX = ".llm-hud-trash-"
 RUNTIME_TRASH_RECORD_SUFFIX = ".record"
 RUNTIME_TRASH_PAYLOAD_SUFFIX = ".runtime"
@@ -1081,32 +1080,6 @@ def _remove_staging(
         pass
 
 
-def _sweep_stale_staging(root: Path) -> None:
-    """Remove staging directories orphaned by an interrupted install."""
-    cutoff = time.time() - STAGING_MAX_AGE_SECONDS
-    try:
-        entries = list(os.scandir(root))
-    except OSError:
-        return
-    changed = False
-    for entry in entries:
-        if not entry.name.startswith(STAGING_PREFIX):
-            continue
-        path = Path(entry.path)
-        try:
-            metadata = path.lstat()
-        except OSError:
-            continue
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-            continue
-        if metadata.st_mtime > cutoff:
-            continue
-        shutil.rmtree(path, ignore_errors=True)
-        changed = True
-    if changed:
-        fsync_directory(root)
-
-
 def _trash_paths(versions: Path, token: str) -> tuple[Path, Path]:
     stem = f"{RUNTIME_TRASH_PREFIX}{token}"
     return (
@@ -1573,7 +1546,6 @@ def _install_runtime_from_source(
     expected_content_sha256 = source_digest(source)
     version = embedded_runtime_version(source)
     initialize_layout(root)
-    _sweep_stale_staging(root)
     try:
         with RuntimeLock(root):
             _remove_managed_runtime_trash(root / VERSIONS_DIR_NAME)

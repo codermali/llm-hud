@@ -205,23 +205,24 @@ class RuntimeInstallerTests(unittest.TestCase):
                 )
             )
 
-    def test_stale_staging_directories_are_swept_on_install(self):
+    def test_install_does_not_delete_unowned_staging_directories(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "runtime"
             root.mkdir()
             owned_root(root)
             initialize_layout(root)
-            stale = root / f"{STAGING_PREFIX}stale"
-            stale.mkdir()
-            (stale / "leftover").write_text("partial copy\n")
-            old = 4000.0  # well past STAGING_MAX_AGE_SECONDS
-            os.utime(stale, (old, old))
+            old_stage = root / f"{STAGING_PREFIX}old-but-owned-elsewhere"
+            old_stage.mkdir()
+            (old_stage / "sentinel").write_text("concurrent install\n")
+            os.utime(old_stage, (4000.0, 4000.0))
             fresh = root / f"{STAGING_PREFIX}fresh"
             fresh.mkdir()
 
             install_versioned_runtime(ROOT, root)
 
-            self.assertFalse(stale.exists())
+            self.assertEqual(
+                (old_stage / "sentinel").read_text(), "concurrent install\n"
+            )
             self.assertTrue(fresh.exists())
 
     def test_concurrent_claims_have_one_winner_and_losers_accept(self):
