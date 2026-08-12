@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install 'ruff==0.16.*'
-      - run: ruff check src tests scripts
+      - run: ruff check --no-cache src tests scripts
 
   unit-tests:
     runs-on: ubuntu-latest
