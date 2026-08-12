@@ -114,6 +114,8 @@ def _probe_version(command: str) -> tuple[str, bool, str | None]:
     version = output.splitlines()[0] if output else "unknown"
     if completed.returncode != 0:
         return version, False, f"version probe exited {completed.returncode}"
+    if not output:
+        return version, False, "version probe returned no output"
     return version, True, None
 
 

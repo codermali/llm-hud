@@ -51,6 +51,11 @@ class VersionTests(unittest.TestCase):
                 "broken version",
             )
 
+    def test_empty_successful_version_command_remains_unknown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = stub_executable(Path(directory), "agent", "exit 0")
+            self.assertEqual(_version(str(path)), "unknown")
+
 
 class InstallCommandTests(unittest.TestCase):
     def test_explicit_provider_warns_when_cli_is_absent(self):
@@ -149,6 +154,30 @@ class UninstallCommandTests(unittest.TestCase):
 
 
 class DoctorCommandTests(unittest.TestCase):
+    def test_empty_successful_version_probe_is_unhealthy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            codex_cli = stub_executable(root, "codex-stub", "exit 0")
+            config = root / "config.toml"
+            config.write_text('[tui]\nstatus_line = ["current-dir"]\n')
+            with Environment(
+                LLM_HUD_CLAUDE_BIN="",
+                LLM_HUD_CODEX_BIN=str(codex_cli),
+                LLM_HUD_KIMI_BIN="",
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                buffer = io.StringIO()
+                with contextlib.redirect_stdout(buffer):
+                    result = command_doctor(None)  # type: ignore[arg-type]
+
+            self.assertEqual(result, 1)
+            self.assertIn(
+                "unknown (version probe returned no output)",
+                buffer.getvalue(),
+            )
+            self.assertIn("configured", buffer.getvalue())
+
     def test_failed_version_probe_is_unhealthy_even_when_configured(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
