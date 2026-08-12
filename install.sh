@@ -18,8 +18,6 @@ else
 fi
 install_root=${LLM_HUD_INSTALL_DIR:-"$HOME/.local/share/llm-hud"}
 bin_dir=${LLM_HUD_BIN_DIR:-"$HOME/.local/bin"}
-install_marker_name=.llm-hud-install-root
-install_marker_value=llm-hud-install-root-v1
 carriage_return=$(printf '\r')
 
 reject_line_break() {
@@ -55,16 +53,6 @@ reject_line_break LLM_HUD_CHECKSUM_URL "$repo_checksum"
 reject_line_break HOME "$HOME"
 reject_line_break PATH "$PATH"
 reject_line_break installer-path "$0"
-
-directory_is_empty() {
-  set -- "$1"/* "$1"/.[!.]* "$1"/..?*
-  for entry do
-    if [ -e "$entry" ] || [ -L "$entry" ]; then
-      return 1
-    fi
-  done
-  return 0
-}
 
 find_python() {
   for candidate in python3.13 python3.12 python3.11 python3; do
@@ -230,50 +218,9 @@ import sys
 sys.path.insert(0, sys.argv.pop(1))
 runpy.run_module("llm_hud.installer", run_name="__main__")'
 
+# Root safety (ownership marker, dangerous or non-empty directories) is the
+# Python installer's job; the shell only decides checkout vs managed install.
 if [ "$source_root" != "$install_root" ]; then
-  home_root=""
-  home_local_root=""
-  home_local_share_root=""
-  home_local_bin_root=""
-  if canonical_directory "$HOME"; then
-    home_root=$canonical_result
-  fi
-  if canonical_directory "$HOME/.local"; then
-    home_local_root=$canonical_result
-  fi
-  if canonical_directory "$HOME/.local/share"; then
-    home_local_share_root=$canonical_result
-  fi
-  if canonical_directory "$HOME/.local/bin"; then
-    home_local_bin_root=$canonical_result
-  fi
-  case "$install_root" in
-    /|//|"$home_root"|"$home_local_root"|"$home_local_share_root"|"$home_local_bin_root")
-      printf '%s\n' "Refusing unsafe LLM_HUD_INSTALL_DIR: $install_root" >&2
-      printf '%s\n' "Choose a dedicated directory such as $HOME/.local/share/llm-hud." >&2
-      exit 1
-      ;;
-  esac
-
-  install_marker="$install_root/$install_marker_name"
-  if [ -L "$install_marker" ]; then
-    printf '%s\n' "Refusing symlink install marker: $install_marker" >&2
-    exit 1
-  elif [ -e "$install_marker" ] && [ ! -f "$install_marker" ]; then
-    printf '%s\n' "Refusing non-file install marker: $install_marker" >&2
-    exit 1
-  elif [ -f "$install_marker" ]; then
-    marker_value=$(sed -n '1p' "$install_marker" 2>/dev/null || true)
-    if [ "$marker_value" != "$install_marker_value" ]; then
-      printf '%s\n' "Refusing unrecognized install marker: $install_marker" >&2
-      exit 1
-    fi
-  elif ! directory_is_empty "$install_root"; then
-    printf '%s\n' "Refusing non-empty unmanaged install directory: $install_root" >&2
-    printf '%s\n' "Choose an empty directory dedicated to llm-hud." >&2
-    exit 1
-  fi
-
   "$python_bin" -I -B -c "$installer_bootstrap" "$source_root/src" \
     --source "$source_root" \
     --root "$install_root" \

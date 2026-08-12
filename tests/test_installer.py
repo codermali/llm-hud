@@ -280,7 +280,7 @@ class InstallerRootSafetyTests(unittest.TestCase):
             result = run_installer(root, home)
 
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("Refusing unsafe LLM_HUD_INSTALL_DIR", result.stderr)
+            self.assertIn("refusing unsafe install root", result.stderr)
             self.assertEqual(sentinel.read_text(), "keep")
 
     def test_refuses_broad_directories_below_home(self):
@@ -295,7 +295,7 @@ class InstallerRootSafetyTests(unittest.TestCase):
                 result = run_installer(root, install_dir)
 
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("Refusing unsafe LLM_HUD_INSTALL_DIR", result.stderr)
+                self.assertIn("refusing unsafe install root", result.stderr)
                 self.assertEqual(sentinel.read_text(), "keep")
 
     def test_refuses_a_nonempty_unmanaged_directory(self):
@@ -309,7 +309,7 @@ class InstallerRootSafetyTests(unittest.TestCase):
             result = run_installer(root, install_dir)
 
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("Refusing non-empty unmanaged install directory", result.stderr)
+            self.assertIn("non-empty unmanaged install root", result.stderr)
             self.assertEqual(sentinel.read_text(), "keep")
 
     def test_refuses_a_flat_legacy_installation(self):
@@ -328,7 +328,7 @@ class InstallerRootSafetyTests(unittest.TestCase):
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(
-                "Refusing non-empty unmanaged install directory", result.stderr
+                "non-empty unmanaged install root", result.stderr
             )
             self.assertFalse((install_dir / MARKER).exists())
 
@@ -351,7 +351,7 @@ class InstallerRootSafetyTests(unittest.TestCase):
             result = run_installer(root, install_dir)
 
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("Refusing non-empty unmanaged install directory", result.stderr)
+            self.assertIn("non-empty unmanaged install root", result.stderr)
             self.assertEqual((install_dir / "src/llm_hud/cli.py").read_text(), "keep")
 
     def test_running_from_the_install_root_does_not_mark_or_replace_the_checkout(self):
@@ -380,7 +380,7 @@ class InstallerRootSafetyTests(unittest.TestCase):
             result = run_installer(root, install_dir)
 
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("Refusing unrecognized install marker", result.stderr)
+            self.assertIn("unrecognized install marker", result.stderr)
 
     def test_refuses_to_replace_a_foreign_external_launcher(self):
         with tempfile.TemporaryDirectory() as directory:
