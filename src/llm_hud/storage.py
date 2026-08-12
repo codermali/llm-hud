@@ -98,7 +98,7 @@ def read_provider_state(
                     f"installation state is not a regular file: {path}"
                 )
             payload = json.load(handle)
-    except json.JSONDecodeError as error:
+    except (UnicodeError, json.JSONDecodeError) as error:
         raise StateFileError(f"invalid installation state {path}: {error}") from error
     except OSError as error:
         raise StateFileError(f"cannot read installation state {path}: {error}") from error

@@ -149,6 +149,13 @@ class ProviderStateTests(unittest.TestCase):
                     with self.assertRaises(StateFileError):
                         read_provider_state(path, supported_schemas=frozenset((1,)))
 
+    def test_non_utf8_state_is_invalid_rather_than_a_crash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "provider.json"
+            path.write_bytes(b'{"schema": 1, "note": "\xff\xfe"}')
+            with self.assertRaisesRegex(StateFileError, "invalid installation state"):
+                read_provider_state(path, supported_schemas=frozenset((1,)))
+
     def test_future_schema_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "provider.json"
