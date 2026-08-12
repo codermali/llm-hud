@@ -1369,7 +1369,7 @@ def _replace_invalid_runtime_unlocked(
                     os.rename(destination, staging)
                     _fsync_directory_required(versions)
                     _fsync_directory_required(root)
-                except OSError as error:
+                except (OSError, RuntimeLayoutError) as error:
                     rollback_errors.append(
                         f"cannot move failed repair back to staging: {error}"
                     )

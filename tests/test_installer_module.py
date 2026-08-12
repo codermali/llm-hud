@@ -1372,6 +1372,67 @@ class RuntimeInstallerTests(unittest.TestCase):
             self.assertTrue(installed.is_dir())
             self.assertEqual((installed / "README.md").read_bytes(), corrupt)
 
+    def test_repair_rollback_sync_failure_still_restores_active_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            owned_root(root)
+            first, _ = install_runtime_from_source(ROOT, root)
+            activation_before = (root / "activation").read_bytes()
+            installed = runtime_path(root, first.release_id)
+            corrupt = b"corrupt active runtime\n"
+            (installed / "README.md").write_bytes(corrupt)
+            original_rename = installer_module.os.rename
+            original_sync = installer_module._fsync_directory_required
+            rollback_started = False
+            sync_failed = False
+
+            def track_rollback_rename(source, destination):
+                nonlocal rollback_started
+                is_rollback = Path(source).resolve(
+                    strict=False
+                ) == installed.resolve(strict=False) and Path(
+                    destination
+                ).name.startswith(STAGING_PREFIX)
+                result = original_rename(source, destination)
+                if is_rollback:
+                    rollback_started = True
+                return result
+
+            def fail_first_rollback_sync(path):
+                nonlocal sync_failed
+                if rollback_started and not sync_failed:
+                    sync_failed = True
+                    raise RuntimeLayoutError("simulated rollback sync failure")
+                return original_sync(path)
+
+            with mock.patch(
+                "llm_hud.installer.validate_runtime",
+                side_effect=RuntimeLayoutError("simulated repaired validation failure"),
+            ), mock.patch(
+                "llm_hud.installer.os.rename",
+                side_effect=track_rollback_rename,
+            ), mock.patch(
+                "llm_hud.installer._fsync_directory_required",
+                side_effect=fail_first_rollback_sync,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeLayoutError,
+                    "simulated rollback sync failure",
+                ):
+                    install_runtime_from_source(ROOT, root)
+
+            self.assertTrue(sync_failed)
+            self.assertEqual((root / "activation").read_bytes(), activation_before)
+            self.assertTrue(installed.is_dir())
+            self.assertEqual((installed / "README.md").read_bytes(), corrupt)
+            self.assertFalse(
+                any(
+                    path.name.startswith(installer_module.RUNTIME_TRASH_PREFIX)
+                    for path in (root / VERSIONS_DIR_NAME).iterdir()
+                )
+            )
+
     def test_unsafe_source_leaves_existing_activation_unchanged(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
