@@ -2,7 +2,7 @@
 # Installs llm-hud from a local checkout or, when piped from curl, from the
 # published repository tarball:
 #
-#   curl -fsSL https://raw.githubusercontent.com/codermali/llm-hud/main/install.sh | sh
+#   curl -fsSL https://github.com/codermali/llm-hud/releases/latest/download/install.sh | sh
 #
 set -eu
 
