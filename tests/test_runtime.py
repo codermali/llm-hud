@@ -19,6 +19,7 @@ from llm_hud.runtime import (
     RuntimeLock,
     activate,
     activate_with_replaced,
+    clear_activation,
     finalize_runtime,
     format_activation,
     initialize_layout,
@@ -250,6 +251,21 @@ class ActivationTests(unittest.TestCase):
 
             self.assertEqual(unchanged, activation)
             self.assertIsNone(replaced)
+
+    def test_clear_activation_requires_the_expected_active_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            initialize_owned_layout(root)
+            first = create_runtime(root, "first", "1.0.0")
+            activate(root, first)
+
+            with self.assertRaisesRegex(RuntimeLayoutError, "active runtime changed"):
+                clear_activation(root, expected_active="9.9.9-missing")
+
+            self.assertEqual(read_activation(root), Activation(first))
+            clear_activation(root, expected_active=first)
+            self.assertIsNone(read_activation(root))
+            validate_runtime(root, first)
 
     def test_failed_activation_replace_keeps_the_old_record(self):
         with tempfile.TemporaryDirectory() as directory:

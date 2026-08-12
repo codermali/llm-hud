@@ -26,6 +26,7 @@ from llm_hud.runtime import (
     RuntimeLock,
     RuntimeMetadata,
     activate_with_replaced,
+    clear_activation,
     embedded_runtime_version,
     finalize_runtime,
     initialize_layout,
@@ -821,6 +822,10 @@ def _install_runtime_from_source(
             metadata.release_id,
             expected_active=expected_active,
         )
+        if replaced_activation is None and expected_active is not None:
+            # A same-release reinstall is a no-op activation. Preserve its
+            # exact record so a later failure does not clear a valid install.
+            replaced_activation = activation
         return metadata, activation, replaced_activation
     finally:
         _remove_staging(
@@ -894,6 +899,13 @@ def _restore_after_install_failure(
     failure: Exception,
 ) -> None:
     if replaced_activation is None:
+        try:
+            clear_activation(root, expected_active=expected_active)
+        except RuntimeLayoutError as clear_error:
+            raise RuntimeLayoutError(
+                f"installation failed ({failure}); clearing the new activation "
+                f"also failed: {clear_error}"
+            ) from failure
         return
     try:
         restore_activation(

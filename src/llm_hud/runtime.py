@@ -473,6 +473,31 @@ def restore_activation(
         return previous
 
 
+def clear_activation(
+    root: Path,
+    *,
+    expected_active: str,
+    lock_timeout: float = 10.0,
+) -> None:
+    """Remove an activation record only if it still names the expected runtime."""
+    validate_release_id(expected_active)
+    with RuntimeLock(root, timeout=lock_timeout):
+        current = read_activation(root)
+        actual_active = current.active if current is not None else None
+        if actual_active != expected_active:
+            raise RuntimeLayoutError(
+                f"active runtime changed from {expected_active!r} "
+                f"to {actual_active!r}"
+            )
+        try:
+            (root / ACTIVATION_NAME).unlink()
+            fsync_directory(root)
+        except OSError as error:
+            raise RuntimeLayoutError(
+                f"cannot clear activation record: {error}"
+            ) from error
+
+
 def _rollback_unlocked(
     root: Path, *, expected_active: str | None | object = _UNSET
 ) -> Activation:

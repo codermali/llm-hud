@@ -568,6 +568,41 @@ class RuntimeInstallerTests(unittest.TestCase):
             assert current is not None
             self.assertEqual(current.active, second.release_id)
 
+    def test_first_install_stable_tools_failure_clears_activation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            owned_root(root)
+
+            with mock.patch(
+                "llm_hud.installer.install_stable_tools",
+                side_effect=RuntimeLayoutError("simulated stable tools failure"),
+            ):
+                with self.assertRaisesRegex(RuntimeLayoutError, "simulated"):
+                    install_versioned_runtime(ROOT, root)
+
+            self.assertIsNone(read_activation(root))
+            releases = list((root / "versions").iterdir())
+            self.assertEqual(len(releases), 1)
+            validate_runtime(root, releases[0].name)
+
+    def test_failed_same_release_reinstall_keeps_existing_activation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            owned_root(root)
+            install_versioned_runtime(ROOT, root)
+            activation_before = (root / "activation").read_bytes()
+
+            with mock.patch(
+                "llm_hud.installer.install_stable_tools",
+                side_effect=RuntimeLayoutError("simulated stable tools failure"),
+            ):
+                with self.assertRaisesRegex(RuntimeLayoutError, "simulated"):
+                    install_versioned_runtime(ROOT, root)
+
+            self.assertEqual((root / "activation").read_bytes(), activation_before)
+
     def test_modified_stable_control_is_refreshed_on_reinstall(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "runtime"
@@ -798,6 +833,31 @@ class RuntimeInstallerTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(running.returncode, 0, running.stderr)
+
+    def test_first_install_post_activation_failure_clears_activation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "runtime"
+            launcher = base / "bin" / "llm-hud"
+            root.mkdir()
+            owned_root(root)
+
+            with mock.patch(
+                "llm_hud.installer._smoke_test_dispatcher",
+                side_effect=RuntimeLayoutError("simulated post-activation failure"),
+            ):
+                with self.assertRaisesRegex(RuntimeLayoutError, "simulated"):
+                    install_complete(
+                        ROOT,
+                        root,
+                        launcher,
+                        Path(sys.executable),
+                    )
+
+            self.assertIsNone(read_activation(root))
+            releases = list((root / "versions").iterdir())
+            self.assertEqual(len(releases), 1)
+            validate_runtime(root, releases[0].name)
 
     def test_post_activation_failure_restores_the_activation_actually_replaced(self):
         with tempfile.TemporaryDirectory() as directory:
