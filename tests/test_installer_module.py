@@ -777,6 +777,73 @@ class RuntimeInstallerTests(unittest.TestCase):
                 expected.control,
             )
 
+    def test_stable_tools_snapshot_is_revalidated_before_install(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            owned_root(root)
+            metadata, _ = install_versioned_runtime(ROOT, root)
+            tools = installer_module.load_stable_tools(ROOT)
+            dispatcher_path = root / installer_module.DISPATCHER_DESTINATION
+            control_path = root / installer_module.CONTROL_DESTINATION
+            before = (dispatcher_path.read_bytes(), control_path.read_bytes())
+            invalid_dispatcher = "if:\n"
+            cases = (
+                (
+                    "stable dispatcher: SHA256 mismatch",
+                    installer_module.StableTools(
+                        dispatcher=tools.dispatcher,
+                        control=tools.control,
+                        dispatcher_sha256="0" * 64,
+                        control_sha256=tools.control_sha256,
+                    ),
+                ),
+                (
+                    "stable runtime control: SHA256 mismatch",
+                    installer_module.StableTools(
+                        dispatcher=tools.dispatcher,
+                        control=tools.control,
+                        dispatcher_sha256=tools.dispatcher_sha256,
+                        control_sha256="0" * 64,
+                    ),
+                ),
+                (
+                    "invalid stable dispatcher",
+                    installer_module.StableTools(
+                        dispatcher=invalid_dispatcher,
+                        control=tools.control,
+                        dispatcher_sha256=hashlib.sha256(
+                            invalid_dispatcher.encode("utf-8")
+                        ).hexdigest(),
+                        control_sha256=tools.control_sha256,
+                    ),
+                ),
+                (
+                    "invalid stable runtime control",
+                    installer_module.StableTools(
+                        dispatcher=tools.dispatcher,
+                        control=invalid_dispatcher,
+                        dispatcher_sha256=tools.dispatcher_sha256,
+                        control_sha256=hashlib.sha256(
+                            invalid_dispatcher.encode("utf-8")
+                        ).hexdigest(),
+                    ),
+                ),
+            )
+
+            for message, candidate in cases:
+                with self.subTest(message=message):
+                    with self.assertRaisesRegex(RuntimeLayoutError, message):
+                        install_stable_tools(
+                            candidate,
+                            root,
+                            expected_active=metadata.release_id,
+                        )
+                    self.assertEqual(
+                        (dispatcher_path.read_bytes(), control_path.read_bytes()),
+                        before,
+                    )
+
     def test_symlinked_stable_directory_is_rejected_before_activation(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

@@ -301,6 +301,23 @@ def _decode_stable_source(path: Path, description: str) -> str:
         raise RuntimeLayoutError(f"{description} is not UTF-8: {path}") from error
 
 
+def _validate_stable_tools(tools: StableTools) -> StableTools:
+    for description, text, declared_sha256 in (
+        ("stable dispatcher", tools.dispatcher, tools.dispatcher_sha256),
+        ("stable runtime control", tools.control, tools.control_sha256),
+    ):
+        if not isinstance(text, str):
+            raise RuntimeLayoutError(f"invalid {description}: expected text")
+        actual_sha256 = _sha256(text.encode("utf-8"))
+        if declared_sha256 != actual_sha256:
+            raise RuntimeLayoutError(f"invalid {description}: SHA256 mismatch")
+        try:
+            compile(text, description, "exec", dont_inherit=True)
+        except (SyntaxError, ValueError) as error:
+            raise RuntimeLayoutError(f"invalid {description}: {error}") from error
+    return tools
+
+
 def load_stable_tools(source: Path) -> StableTools:
     dispatcher = _decode_stable_source(
         source / DISPATCHER_SOURCE, "stable dispatcher source"
@@ -308,21 +325,14 @@ def load_stable_tools(source: Path) -> StableTools:
     control = _decode_stable_source(
         source / CONTROL_SOURCE, "stable runtime control source"
     )
-    tools = StableTools(
-        dispatcher=dispatcher,
-        control=control,
-        dispatcher_sha256=_sha256(dispatcher.encode("utf-8")),
-        control_sha256=_sha256(control.encode("utf-8")),
+    return _validate_stable_tools(
+        StableTools(
+            dispatcher=dispatcher,
+            control=control,
+            dispatcher_sha256=_sha256(dispatcher.encode("utf-8")),
+            control_sha256=_sha256(control.encode("utf-8")),
+        )
     )
-    for description, text in (
-        ("stable dispatcher", tools.dispatcher),
-        ("stable runtime control", tools.control),
-    ):
-        try:
-            compile(text, description, "exec", dont_inherit=True)
-        except (SyntaxError, ValueError) as error:
-            raise RuntimeLayoutError(f"invalid {description}: {error}") from error
-    return tools
 
 
 def _existing_file_sha256(path: Path, description: str) -> str | None:
@@ -406,7 +416,7 @@ def install_stable_tools(
 ) -> None:
     root = Path(root).resolve(strict=True)
     tools = (
-        source_or_tools
+        _validate_stable_tools(source_or_tools)
         if isinstance(source_or_tools, StableTools)
         else load_stable_tools(Path(source_or_tools))
     )
