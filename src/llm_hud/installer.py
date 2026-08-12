@@ -391,14 +391,17 @@ def _install_stable_tools_unlocked(
 
 
 def install_stable_tools(
-    source: Path,
+    source_or_tools: Path | StableTools,
     root: Path,
     *,
     expected_active: str,
 ) -> None:
-    source = Path(source)
     root = Path(root).resolve(strict=True)
-    tools = load_stable_tools(source)
+    tools = (
+        source_or_tools
+        if isinstance(source_or_tools, StableTools)
+        else load_stable_tools(Path(source_or_tools))
+    )
     with RuntimeLock(root):
         current = read_activation(root)
         actual_active = current.active if current is not None else None
@@ -868,7 +871,7 @@ def _install_versioned_runtime(
     )
     try:
         install_stable_tools(
-            source,
+            tools,
             root,
             expected_active=metadata.release_id,
         )

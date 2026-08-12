@@ -648,6 +648,48 @@ class RuntimeInstallerTests(unittest.TestCase):
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
 
+    def test_stable_tools_install_reuses_the_preflighted_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "runtime"
+            source = base / "changing-source"
+            root.mkdir()
+            source.mkdir()
+            owned_root(root)
+            copy_runtime_checkout(source)
+            shutil.copytree(ROOT / "scripts", source / "scripts")
+            expected = installer_module.load_stable_tools(source)
+            original_install = installer_module._install_runtime_from_source
+
+            def change_sources_after_preflight(*args, **kwargs):
+                result = original_install(*args, **kwargs)
+                for relative in (
+                    installer_module.DISPATCHER_SOURCE,
+                    installer_module.CONTROL_SOURCE,
+                ):
+                    with (source / relative).open("a") as handle:
+                        handle.write("\n# changed after stable-tools preflight\n")
+                return result
+
+            with mock.patch(
+                "llm_hud.installer.load_stable_tools",
+                wraps=installer_module.load_stable_tools,
+            ) as load_tools, mock.patch(
+                "llm_hud.installer._install_runtime_from_source",
+                side_effect=change_sources_after_preflight,
+            ):
+                install_versioned_runtime(source, root)
+
+            load_tools.assert_called_once_with(source)
+            self.assertEqual(
+                (root / installer_module.DISPATCHER_DESTINATION).read_text(),
+                expected.dispatcher,
+            )
+            self.assertEqual(
+                (root / installer_module.CONTROL_DESTINATION).read_text(),
+                expected.control,
+            )
+
     def test_symlinked_stable_directory_is_rejected_before_activation(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
