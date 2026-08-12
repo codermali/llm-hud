@@ -92,6 +92,11 @@ def command_uninstall(args: argparse.Namespace) -> int:
 
 
 def _version(command: str) -> str:
+    return _probe_version(command)[0]
+
+
+def _probe_version(command: str) -> tuple[str, bool, str | None]:
+    """Return the version, whether the CLI answered, and a failure detail."""
     try:
         completed = subprocess.run(
             [command, "--version"],
@@ -101,10 +106,15 @@ def _version(command: str) -> str:
             timeout=3,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return "unknown"
+    except subprocess.TimeoutExpired:
+        return "unknown", False, "version probe timed out"
+    except OSError:
+        return "unknown", False, "version probe failed"
     output = completed.stdout.strip() or completed.stderr.strip()
-    return output.splitlines()[0] if output else "unknown"
+    version = output.splitlines()[0] if output else "unknown"
+    if completed.returncode != 0:
+        return version, False, f"version probe exited {completed.returncode}"
+    return version, True, None
 
 
 def command_doctor(_: argparse.Namespace) -> int:
@@ -117,9 +127,14 @@ def command_doctor(_: argparse.Namespace) -> int:
             state = "built in" if configured else "not available"
         else:
             state = "configured" if configured else "not configured"
-        installed = _version(executable) if executable is not None else "not installed"
+        if executable is None:
+            installed, executable_healthy = "not installed", False
+        else:
+            installed, executable_healthy, probe_error = _probe_version(executable)
+            if probe_error:
+                installed = f"{installed} ({probe_error})"
         print(f"{provider.id}: {installed}; {state}; {detail}")
-        if available and not configured:
+        if available and (not configured or not executable_healthy):
             healthy = False
     return 0 if healthy else 1
 
