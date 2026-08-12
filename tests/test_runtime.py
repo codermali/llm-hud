@@ -349,6 +349,32 @@ class RuntimeSourceTests(unittest.TestCase):
             else:
                 self.assertNotEqual(second, source_digest(root))
 
+    def test_source_digest_wraps_a_file_disappearing_during_the_walk(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("src", "bin"):
+                (root / name).mkdir()
+                (root / name / "file").write_text(name)
+            for name in ("README.md", "LICENSE", "pyproject.toml"):
+                (root / name).write_text(name)
+            vanishing = root / "src" / "vanishing.py"
+            vanishing.write_text("content")
+            original_rglob = Path.rglob
+
+            def rglob_with_disappearance(path, pattern):
+                for descendant in original_rglob(path, pattern):
+                    if descendant == vanishing:
+                        descendant.unlink()
+                    yield descendant
+
+            with mock.patch.object(Path, "rglob", new=rglob_with_disappearance):
+                with self.assertRaisesRegex(
+                    RuntimeLayoutError, "cannot inspect runtime source"
+                ) as raised:
+                    source_digest(root)
+
+            self.assertIsInstance(raised.exception.__cause__, FileNotFoundError)
+
     def test_finalize_rejects_staging_outside_the_owned_root(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

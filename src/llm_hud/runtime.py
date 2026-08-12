@@ -669,35 +669,42 @@ def source_digest(root: Path, *, reject_python_cache: bool = False) -> str:
         if stat.S_ISLNK(candidate_metadata.st_mode):
             raise RuntimeLayoutError(f"runtime source path is a symlink: {candidate}")
         if stat.S_ISDIR(candidate_metadata.st_mode):
-            for path in candidate.rglob("*"):
-                metadata = path.lstat()
-                relative = path.relative_to(root)
-                in_python_cache = "__pycache__" in relative.parts
-                if stat.S_ISLNK(metadata.st_mode):
-                    raise RuntimeLayoutError(
-                        f"runtime source path is a symlink: {path}"
-                    )
-                if stat.S_ISREG(metadata.st_mode):
-                    is_bytecode = path.suffix in (".pyc", ".pyo")
-                    if in_python_cache and is_bytecode:
-                        if reject_python_cache:
-                            raise RuntimeLayoutError(
-                                f"runtime source contains a Python cache: {path}"
-                            )
-                        continue
-                    if is_bytecode:
+            try:
+                descendants = candidate.rglob("*")
+                for path in descendants:
+                    metadata = path.lstat()
+                    relative = path.relative_to(root)
+                    in_python_cache = "__pycache__" in relative.parts
+                    if stat.S_ISLNK(metadata.st_mode):
                         raise RuntimeLayoutError(
-                            f"runtime source contains bytecode outside __pycache__: {path}"
+                            f"runtime source path is a symlink: {path}"
                         )
-                    files.append(path)
-                elif not stat.S_ISDIR(metadata.st_mode):
-                    raise RuntimeLayoutError(
-                        f"runtime source path is not regular: {path}"
-                    )
-                elif reject_python_cache and path.name == "__pycache__":
-                    raise RuntimeLayoutError(
-                        f"runtime source contains a Python cache: {path}"
-                    )
+                    if stat.S_ISREG(metadata.st_mode):
+                        is_bytecode = path.suffix in (".pyc", ".pyo")
+                        if in_python_cache and is_bytecode:
+                            if reject_python_cache:
+                                raise RuntimeLayoutError(
+                                    f"runtime source contains a Python cache: {path}"
+                                )
+                            continue
+                        if is_bytecode:
+                            raise RuntimeLayoutError(
+                                "runtime source contains bytecode outside "
+                                f"__pycache__: {path}"
+                            )
+                        files.append(path)
+                    elif not stat.S_ISDIR(metadata.st_mode):
+                        raise RuntimeLayoutError(
+                            f"runtime source path is not regular: {path}"
+                        )
+                    elif reject_python_cache and path.name == "__pycache__":
+                        raise RuntimeLayoutError(
+                            f"runtime source contains a Python cache: {path}"
+                        )
+            except OSError as error:
+                raise RuntimeLayoutError(
+                    f"cannot inspect runtime source {candidate}: {error}"
+                ) from error
         elif stat.S_ISREG(candidate_metadata.st_mode):
             files.append(candidate)
         else:
