@@ -5,7 +5,9 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import PurePosixPath, PureWindowsPath
+
+from llm_hud.paths import home_dir
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -68,9 +70,7 @@ def _compact_path(value: str | None) -> str | None:
     if not value:
         return None
     path_value = os.path.expanduser(value)
-    home_value = os.path.expanduser(
-        os.environ.get("LLM_HUD_HOME", str(Path.home()))
-    )
+    home_value = str(home_dir())
 
     # cwd is upstream data, so its syntax need not match the host running the HUD
     # (tests, remote sessions, and WSL can all cross that boundary). Pure paths let

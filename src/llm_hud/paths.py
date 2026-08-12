@@ -5,7 +5,8 @@ from pathlib import Path
 
 
 def home_dir() -> Path:
-    return Path(os.environ.get("LLM_HUD_HOME", Path.home())).expanduser()
+    override = os.environ.get("LLM_HUD_HOME")
+    return Path(override).expanduser() if override else Path.home()
 
 
 def state_dir() -> Path:

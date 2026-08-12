@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime
+from unittest import mock
 
 from llm_hud.hud import ANSI_RE, HudSnapshot, UsageWindow, render_hud
 from tests.support import Environment
@@ -21,6 +22,14 @@ class HudTests(unittest.TestCase):
                 "Claude · Opus · ~/Desktop/llm-hud\n"
                 "5h  ████████░░   76% used    7d  ██████░░░░   59% used",
             )
+
+    def test_explicit_home_does_not_query_the_system_home(self):
+        snapshot = HudSnapshot(provider="Claude", cwd="/explicit/home/project")
+        with (
+            Environment(LLM_HUD_HOME="/explicit/home"),
+            mock.patch("llm_hud.paths.Path.home", side_effect=RuntimeError("no home")),
+        ):
+            self.assertEqual(render_hud(snapshot, color=False), "Claude · ~/project")
 
     def test_windows_path_inside_home_uses_forward_slashes(self):
         snapshot = HudSnapshot(
