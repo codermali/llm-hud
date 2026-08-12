@@ -26,7 +26,6 @@
 
 以下格式跨版本存在，并由测试钉住：
 
-- runtime install marker 与 release id；
 - activation 的 active/previous 关系；
 - install ownership/layout marker、runtime marker 与 release id；
 - stable dispatcher 与 runtime-control 的固定位置和接口；
