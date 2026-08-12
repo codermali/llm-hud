@@ -39,9 +39,23 @@ Codex CLI 由自身负责渲染，LLM HUD 只选择和排列原生字段：
 gpt-5.6 xhigh · ~/projects/example · 5h 82% left · weekly 63% left · Context 98% left
 ```
 
+## 平台支持
+
+| 平台 | 状态 | 说明 |
+| --- | --- | --- |
+| macOS | ✅ 支持 | 主要开发平台；CI 含 macOS 安装冒烟测试 |
+| Linux | ✅ 支持 | CI 在 Ubuntu 上运行完整测试矩阵（Python 3.11–3.13） |
+| WSL | ✅ 支持 | 等同 Linux；llm-hud 必须与 CLI 工具装在 WSL 同一侧 |
+| 原生 Windows | ❌ 暂不支持 | 见下 |
+
+原生 Windows（不经 WSL）暂不支持，原因有三：安装脚本是 POSIX shell；运行时锁
+使用 `fcntl.flock`（Unix 专属，Windows 上无法导入）；启动器是 `#!/bin/sh` 脚本。
+HUD 渲染核心本身是纯标准库 Python、可移植——若未来支持原生 Windows，预计走
+pip/pipx 安装路线（放弃版本化运行时与回退），而非移植现有安装器。有真实需求
+欢迎提 issue。
+
 ## 安装
 
-支持 macOS、Linux 和 WSL；原生 Windows 暂不支持（安装器依赖 POSIX 文件锁）。
 需要 Python 3.11 或更高版本。
 
 下面的命令会安装最新的 GitHub Release，使用的安装脚本与该 Release 一同发布、
