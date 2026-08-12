@@ -142,6 +142,8 @@ jobs:
           export LLM_HUD_CODEX_BIN=
           export LLM_HUD_KIMI_BIN=
 
+          mkdir -p "$test_root"
+          printf '%s\n' '{"statusLine":{"type":"command","command":"printf existing"}}' > "$LLM_HUD_CLAUDE_SETTINGS"
           ./install.sh
           launcher="$LLM_HUD_BIN_DIR/llm-hud"
           test -f "$launcher"
@@ -149,7 +151,9 @@ jobs:
           "$launcher" --version
           "$launcher" doctor
           python -c 'import json, pathlib, sys; command = json.loads(pathlib.Path(sys.argv[1]).read_text())["statusLine"]["command"]; assert "\\" not in command, command' "$LLM_HUD_CLAUDE_SETTINGS"
+          test "$(printf '{}' | "$launcher" render claude --no-color | head -n 1)" = existing
           "$launcher" uninstall
+          python -c 'import json, pathlib, sys; assert json.loads(pathlib.Path(sys.argv[1]).read_text())["statusLine"]["command"] == "printf existing"' "$LLM_HUD_CLAUDE_SETTINGS"
 
   bootstrap-smoke:
     runs-on: ubuntu-latest
