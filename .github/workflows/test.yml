@@ -56,6 +56,16 @@ jobs:
           tests.test_toml_edit
           tests.test_state_abi
           tests.test_version
+      - name: Run native Windows installer failure coverage
+        run: >-
+          python -m unittest -v
+          tests.test_installer_module.RuntimeInstallerTests.test_failed_trash_removal_does_not_block_same_release_reinstall
+          tests.test_installer_module.RuntimeInstallerTests.test_failed_trash_rename_keeps_the_original_runtime_valid
+          tests.test_installer_module.RuntimeInstallerTests.test_first_install_removes_its_launcher_when_pointer_write_fails
+          tests.test_installer_module.RuntimeInstallerTests.test_post_activation_failure_restores_the_activation_actually_replaced
+          tests.test_installer_module.RuntimeInstallerTests.test_post_activation_failure_holds_the_lock_against_an_aba_update
+          tests.test_installer_module.RuntimeInstallerTests.test_first_install_failure_holds_the_lock_until_activation_is_cleared
+          tests.test_installer_module.RuntimeInstallerTests.test_stable_tools_install_reuses_the_preflighted_snapshot
       - run: python bin/llm-hud --version
 
   old-python-guard:
