@@ -20,10 +20,12 @@ from llm_hud.toml_edit import remove_key, set_array
 HUD_ITEMS = [
     "model-with-reasoning",
     "current-dir",
+    "five-hour-limit",
     "weekly-limit",
     "context-remaining",
 ]
-OBSOLETE_ITEMS = ["five-hour-limit"]
+# Previously-managed items that installs must scrub from status_line; none now.
+OBSOLETE_ITEMS: list[str] = []
 STATE_SCHEMAS = frozenset((1,))
 
 

@@ -8,7 +8,7 @@ iTerm2 状态栏、macOS 菜单栏、Shell 提示符或后台进程。
 | 工具 | 集成方式 | 常驻显示 | 按需查看 |
 | --- | --- | --- | --- |
 | Claude Code | 自定义状态栏命令 | 模型、目录、5 小时和 7 天额度 | — |
-| Codex CLI | 原生状态栏字段 | 模型、目录、周额度、上下文 | — |
+| Codex CLI | 原生状态栏字段 | 模型、目录、5 小时与周额度、上下文 | — |
 | Kimi CLI | 保留内置工具栏 | 模型、目录、Git、任务、上下文 | 配额（`/usage`） |
 
 每个集成只处理对应工具自己的数据，不检测进程，也不混用不同提供方的状态。
@@ -32,7 +32,7 @@ Claude · Opus · ~/projects/example
 Codex CLI 由自身负责渲染，LLM HUD 只选择和排列原生字段：
 
 ```text
-gpt-5.6 xhigh · ~/projects/example · weekly 63% left · Context 98% left
+gpt-5.6 xhigh · ~/projects/example · 5h 82% left · weekly 63% left · Context 98% left
 ```
 
 ## 安装
@@ -127,6 +127,7 @@ Codex CLI 不使用外部状态栏渲染器。LLM HUD 配置以下原生
 status_line = [
   "model-with-reasoning",
   "current-dir",
+  "five-hour-limit",
   "weekly-limit",
   "context-remaining",
 ]

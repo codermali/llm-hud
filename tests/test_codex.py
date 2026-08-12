@@ -32,7 +32,7 @@ class CodexProviderTests(unittest.TestCase):
                 provider = CodexProvider()
                 self.assertEqual(provider.install("ignored").status, "installed")
                 self.assertEqual(status_line(config), [*HUD_ITEMS, "git-branch"])
-                self.assertNotIn("five-hour-limit", status_line(config))
+                self.assertEqual(status_line(config).count("five-hour-limit"), 1)
                 self.assertEqual(provider.install("ignored").status, "installed")
                 self.assertEqual(status_line(config).count("weekly-limit"), 1)
 
