@@ -1,172 +1,110 @@
 # LLM HUD
 
-LLM HUD 为受支持的 AI 编程命令行工具配置简洁的终端状态栏。它不会创建
-iTerm2 状态栏、macOS 菜单栏、Shell 提示符或后台进程。
+LLM HUD 是面向 AI 编程 CLI 的轻量状态栏配置器：为 Claude Code 渲染用量 HUD，为 Codex CLI 配置原生状态栏，并在检测到 Kimi CLI 时保留其信息更完整的内置工具栏。
 
-## 支持情况
+它不启动后台进程，也不跨工具收集或混用数据。这里的 HUD 指 CLI 会话底部的状态栏，不是 iTerm2 状态栏、系统菜单栏或 Shell 提示符。
 
-| 工具 | 集成方式 | 常驻显示 | 按需查看 |
-| --- | --- | --- | --- |
-| Claude Code | 自定义状态栏命令 | 模型、目录、5 小时和 7 天额度 | — |
-| Codex CLI | 原生状态栏字段 | 模型、目录、5 小时与周额度、上下文 | — |
-| Kimi CLI | 保留内置工具栏 | 模型、目录、Git、任务、上下文 | 配额（`/usage`） |
+## 效果预览
 
-每个集成只处理对应工具自己的数据，不检测进程，也不混用不同提供方的状态。
-
-## 显示效果
-
-Claude Code 支持外部状态栏命令，因此可以显示完整的双行 HUD：
+Claude Code 通常显示双行 HUD：
 
 ```text
 Claude · Opus · ~/projects/example
 5h  ██░░░░░░░░   24% used  ↻ 14:30    7d  ████░░░░░░   41% used  ↻ Fri 09:00
 ```
 
-额度按“已用百分比”显示，与 Claude Code 自带的 `/status` 用量页同一口径：条形越满
-表示用得越多，超过 70% 变红。
+Claude 的条形图表示已用比例，超过 70% 时变红。窄终端会自动换行或压缩路径。
 
-额度数据由 Claude Code 提供，只在 Claude Pro/Max 订阅账户上出现，并且要等到会话的
-首次响应之后。没有额度数据时（首次响应之前，或使用 API key 等不提供额度的账户），
-HUD 只显示第一行；两个额度窗口也可能各自缺失，此时只显示存在的窗口：
-
-```text
-Claude · Opus · ~/projects/example
-```
-
-Codex CLI 由自身负责渲染，LLM HUD 只选择和排列原生字段：
+Codex CLI 由自身渲染，LLM HUD 只选择并排列原生字段：
 
 ```text
 gpt-5.6 xhigh · ~/projects/example · 5h 82% left · weekly 63% left · Context 98% left
 ```
 
-## 平台支持
+Codex 的额度和上下文字段显示剩余比例。
 
-| 平台 | 状态 | 说明 |
-| --- | --- | --- |
-| macOS | ✅ 支持 | 主要开发平台；CI 覆盖 Python 3.9 安装和当前 Python 运行时 |
-| Linux | ✅ 支持 | CI 在 Ubuntu 上覆盖最低版本、关键边界和较新 Python 版本 |
-| WSL | ✅ 支持 | 等同 Linux；llm-hud 必须与 CLI 工具装在 WSL 同一侧 |
-| 原生 Windows | ✅ 支持 | 需要 Git for Windows；安装和管理命令在 Git Bash 中运行 |
+## 支持与要求
 
-原生 Windows 适配本身不需要 WSL，但安装、更新和 `llm-hud` 管理命令目前必须在
-Git Bash 中运行；PowerShell/CMD 直装尚未提供。运行时和各 CLI 仍是原生 Windows
-进程，现有版本化安装、原子切换和 `rollback` 都会保留。Git Bash 也符合上游行为：
-Claude Code 在 Windows 上优先用它运行状态栏命令，Kimi CLI 目前同样要求 Git for
-Windows。
+| 工具 | LLM HUD 的动作 | 常驻信息 | 版本要求 |
+| --- | --- | --- | --- |
+| Claude Code | 安装本地状态栏命令 | 模型、目录、5 小时与 7 天额度 | 基础状态栏 ≥ 1.0.71；完整体验建议 ≥ 2.1.153 |
+| Codex CLI | 配置原生 `[tui].status_line` | 模型、目录、5 小时与周额度、上下文 | ≥ 0.99.0 |
+| Kimi CLI | 检测但不修改配置 | 保留 Kimi 内置工具栏信息 | LLM HUD 没有额外配置版本要求 |
 
-## 安装
+运行 LLM HUD 需要 Python 3.9 或更高版本，并且至少一个受支持的 CLI 已安装且能从 `PATH` 找到。不需要 `pip` 或虚拟环境。
 
-需要 Python 3.9 或更高版本。原生 Windows 还需要安装 Git for Windows，并在 Git
-Bash 中执行本节命令；不要在 PowerShell 或 CMD 中直接运行 `install.sh`。
+| 平台 | 要求 |
+| --- | --- |
+| macOS、Linux | 使用下面的安装命令 |
+| WSL | LLM HUD 与目标 CLI 必须安装在 WSL 同一侧 |
+| 原生 Windows | 安装 Git for Windows，并在 Git Bash 中执行安装和所有 `llm-hud` 管理命令；不需要 WSL |
 
-下面的命令会安装最新的 GitHub Release，使用的安装脚本与该 Release 一同发布、
-互相配套：
+PowerShell 和 CMD 直装目前不受支持。安装后的运行时和各 CLI 仍是原生 Windows 进程。
+
+## 快速开始
+
+从最新 GitHub Release 安装：
 
 ```bash
 curl -fsSL https://github.com/codermali/llm-hud/releases/latest/download/install.sh | sh
 ```
 
-仓库 main 分支上的 `install.sh`（raw.githubusercontent.com 地址）同样可用，
-但它可能领先于最新 Release。
+安装器会下载与该安装脚本同版本的源码包和 SHA-256 清单，将版本化运行时安装到 `~/.local/share/llm-hud`，在 `~/.local/bin/llm-hud` 创建启动器，然后配置检测到的工具。
 
-也可以从本地源码目录安装：
-
-```bash
-./install.sh
-```
-
-安装器默认执行以下操作：
-
-- 将版本化运行时安装到 `~/.local/share/llm-hud`；
-- 在 `~/.local/bin/llm-hud` 创建固定使用已检测 Python 的启动器；
-- 检测 Claude Code、Codex CLI 和 Kimi CLI；
-- 只配置已检测到且需要配置的工具；
-- 将恢复配置所需的状态保存到 `~/.config/llm-hud`。
-
-Python 的检测顺序为 `python3.14`、`python3.13`、`python3.12`、`python3.11`、
-`python3.10`、`python3.9`、`python3`、`python`（最后一项主要用于 Windows）。
-如需指定解释器：
+安装后执行：
 
 ```bash
-LLM_HUD_PYTHON=/path/to/python3.9 ./install.sh
+~/.local/bin/llm-hud doctor
 ```
 
-还可以使用以下环境变量：
+如果 `~/.local/bin` 已在 `PATH` 中，也可以直接运行 `llm-hud doctor`。安装器会在需要时打印 PATH 配置提示。`doctor` 会检查各工具的 `--version` 是否能正常执行以及相应集成是否已配置，但不会强制校验上表中的最低版本。
 
-| 变量 | 用途 | 默认值 |
-| --- | --- | --- |
-| `LLM_HUD_INSTALL_DIR` | 运行时安装目录 | `~/.local/share/llm-hud` |
-| `LLM_HUD_BIN_DIR` | 命令安装目录 | `~/.local/bin` |
-| `LLM_HUD_TARBALL_URL` | 自定义源码包地址 | 最新 GitHub Release |
-| `LLM_HUD_CHECKSUM_URL` | 自定义 SHA-256 清单地址 | 最新 Release 的 `SHA256SUMS` |
+最后重新打开或刷新目标 CLI 会话。Claude 配额数据由 Claude Code 提供，仅在 Pro/Max 订阅账户首次收到响应后出现；没有配额数据时 HUD 只显示模型和目录。用量详情请使用 Claude Code 的 [`/usage`](https://code.claude.com/docs/en/commands)。
 
-自定义 `LLM_HUD_TARBALL_URL` 时，建议同时提供对应的
-`LLM_HUD_CHECKSUM_URL`；后者未设置时，自定义下载包不会执行 SHA-256 校验。
+## 它会修改什么
 
-## 更新与回退
+- Claude Code：配置用户 `settings.json` 中的 `statusLine`，并保留安装前的值以便恢复。设置了 `CLAUDE_CONFIG_DIR` 时使用该目录。
+- Codex CLI：保守修改用户 `config.toml` 中的 `[tui].status_line`，并保存原字段。设置了 `CODEX_HOME` 时使用该目录。
+- Kimi CLI：不修改配置，继续使用 Kimi 自带的底部工具栏。
+- LLM HUD：默认将运行时、启动器和恢复状态分别保存在 `~/.local/share/llm-hud`、`~/.local/bin/llm-hud` 和 `~/.config/llm-hud`。
 
-重新运行同一条安装命令即可更新到最新发布版本。安装器会先比较版本：检测到旧版本
-时直接原子升级并打印提示；已安装版本与要安装的相同时会询问是否重新安装（没有终
-端时默认继续，保证自动化可用）；要安装的版本更旧时会作为降级询问确认。
+默认 Release 安装会校验下载包的 SHA-256。运行时完成复制和验证后才会切换；运行时安装或激活阶段失败时会保留更新前的版本。随后各 provider 逐个配置，这一阶段不是跨 provider 的整体事务：如果其中一个失败，先前已经成功的配置会保留，安装命令返回非零状态。
 
-升级过程先校验下载包的 SHA-256，再复制并验证新运行时；全部通过后才切换当前版
-本。安装失败时会继续使用更新前的版本，提供方配置也不会因为运行时更新而被重置。
+LLM HUD 会在提交 provider 配置前再次检查可观察到的外部修改，检测到配置被同时修改时会拒绝覆盖。请避免在执行配置命令时用其他程序编辑同一文件；更完整的并发边界见[维护者文档](docs/maintainers.md#provider-配置安全)。
 
-需要回到上一个已安装版本时运行：
+## 常用操作
 
-```bash
-llm-hud rollback
-```
+`install.sh` 与 `llm-hud install` 的含义不同：前者安装或更新 LLM HUD 运行时，并在最后配置检测到的工具；后者只配置或重新配置 provider，不安装或更新程序。
 
-`rollback` 只切换 LLM HUD 运行时，不修改 Claude Code 或 Codex CLI 的配置。
+| 目的 | 命令 |
+| --- | --- |
+| 检查工具与集成状态 | `llm-hud doctor` |
+| 查看检测到的工具 | `llm-hud providers` |
+| 重新配置所有已检测工具 | `llm-hud install` |
+| 配置一个工具 | `llm-hud install --provider claude` 或 `--provider codex` |
+| 更新到最新 Release | 重新运行快速开始中的安装命令 |
+| 回到上一个已安装运行时 | `llm-hud rollback` |
+| 恢复接入前的 provider 配置 | `llm-hud uninstall` |
+| 只恢复一个 provider | `llm-hud uninstall --provider claude` 或 `--provider codex` |
+| 查看帮助或版本 | `llm-hud --help`、`llm-hud --version` |
 
-## 常用命令
+`rollback` 只在版本化安装存在上一运行时时切换 LLM HUD 版本，不修改 Claude Code 或 Codex CLI 配置。
 
-```bash
-llm-hud providers
-llm-hud install
-llm-hud install --provider claude
-llm-hud install --provider codex
-llm-hud doctor
-llm-hud uninstall
-llm-hud uninstall --forget
-llm-hud rollback
-```
+`llm-hud uninstall` 的含义是解除集成：它恢复 Claude/Codex 接入前的配置，但不删除 LLM HUD 启动器、运行时或状态目录。当前没有完整删除程序的单一命令；如需彻底移除，请先执行 `llm-hud uninstall` 并确认 provider 配置已恢复，再删除默认的 `~/.local/bin/llm-hud` 文件、`~/.local/share/llm-hud` 目录和 `~/.config/llm-hud` 目录。使用自定义路径时，只删除 `${LLM_HUD_BIN_DIR}/llm-hud` 这个启动器文件，以及实际的 `LLM_HUD_INSTALL_DIR` 和 `LLM_HUD_STATE_DIR`；不要删除可能被其他程序共用的整个 bin 目录。
 
-- `install` 可重复执行，不会重复添加相同配置。
-- `doctor` 检查工具是否已安装、集成是否已配置，以及启动器是否可执行。
-- `uninstall` 恢复接入前的提供方状态栏配置；它不会删除 LLM HUD 运行时。
-- `install` 和 `uninstall` 会在写入前再次比对配置目标与内容；如果此时已观察到
-  读取后的变更，会以 `conflict` 状态拒绝覆盖并返回非零退出码。该检查会缩小外部
-  编辑器的竞争窗口，但不是严格的跨平台 CAS：provider 锁只串行化 LLM HUD 自身
-  的操作，最终检查与原子重命名之间仍可能发生外部写入。
-- 如果用户删除了 LLM HUD 的配置或手动恢复了原状，`install` 会直接重新配置，
-  `uninstall` 会清理遗留的安装状态。
-- `uninstall --forget` 只放弃保存的恢复记录，不改动任何提供方配置。
-
-## 各工具的行为
+## 工具行为与已知限制
 
 ### Claude Code
 
-Claude Code 将状态栏 JSON 传给 `llm-hud render claude`。LLM HUD 从中读取模型、
-工作目录和当前 `rate_limits` 窗口，宽度取自 Claude Code 设置的 `COLUMNS` 环境
-变量。如果原来已有自定义状态栏，LLM HUD 会保留其输出（包括 `refreshInterval`
-等字段），并在卸载时恢复原配置。设置了 `CLAUDE_CONFIG_DIR` 时，LLM HUD 也会在
-该目录中查找 `settings.json`。在 Windows 上，写入 Claude 配置的启动器路径使用
-正斜杠；保留的原状态栏也继续交给 Git Bash 执行。
+Claude Code 把状态栏 JSON 交给 `llm-hud render claude`，LLM HUD 在本地读取模型、工作目录和可用的 `rate_limits` 窗口，不调用 provider API。两个额度窗口可能单独缺失，此时只显示存在的窗口。
 
-上游兼容边界：Claude Code [1.0.71](https://code.claude.com/docs/en/changelog#1-0-71)
-首次提供自定义状态栏，[2.1.80](https://code.claude.com/docs/en/changelog#2-1-80)
-首次向状态栏脚本提供 `rate_limits`，
-[2.1.153](https://code.claude.com/docs/en/changelog#2-1-153) 首次提供 `COLUMNS`
-和 `LINES`。LLM HUD 不强制检查版本；要同时获得上述配额和终端宽度数据，请使用
-Claude Code 2.1.153 或更高版本。输入字段以
-[Claude Code 状态栏文档](https://code.claude.com/docs/en/statusline)为准。
+如果安装前已有自定义状态栏，LLM HUD 会保留其配置并尝试委托原命令；原命令能启动、在 5 秒内结束并产生输出时会显示该输出，解除集成时会恢复原配置。
+
+Claude Code [1.0.71](https://code.claude.com/docs/en/changelog#1-0-71) 首次提供自定义状态栏，[2.1.80](https://code.claude.com/docs/en/changelog#2-1-80) 首次提供 `rate_limits`，[2.1.153](https://code.claude.com/docs/en/changelog#2-1-153) 首次提供 `COLUMNS` 和 `LINES`。字段定义以 [Claude Code 状态栏文档](https://code.claude.com/docs/en/statusline)为准。
 
 ### Codex CLI
 
-Codex CLI 不使用外部状态栏渲染器。LLM HUD 配置以下原生
-`[tui].status_line` 字段：
+LLM HUD 配置以下原生字段；显示样式和刷新时间由 Codex CLI 决定：
 
 ```toml
 [tui]
@@ -179,91 +117,67 @@ status_line = [
 ]
 ```
 
-显示样式和刷新时间由 Codex CLI 决定。项目级 `.codex/config.toml` 或命令行选择的
-profile 可能覆盖用户级配置，`doctor` 目前只检查用户级基础配置。
-
-上游兼容边界：Codex CLI
-[0.99.0](https://github.com/openai/codex/releases/tag/rust-v0.99.0) 是首个发布
-`[tui].status_line` 的稳定版本，并包含这里使用的五个字段。LLM HUD 不强制检查
-版本；请使用 Codex CLI 0.99.0 或更高版本，并以
-[Codex 配置参考](https://developers.openai.com/codex/config-reference/)
-中的当前定义为准。
+项目级 `.codex/config.toml` 或命令行选择的 profile 可能覆盖用户级配置，`doctor` 只检查用户级基础配置。这里使用的字段需要 Codex CLI [0.99.0](https://github.com/openai/codex/releases/tag/rust-v0.99.0) 或更高版本；当前定义以 [Codex 配置参考](https://developers.openai.com/codex/config-reference/)为准。
 
 ### Kimi CLI
 
-LLM HUD 当前保留 Kimi CLI 自带的底部工具栏。原因是外部状态栏命令不能获得内置栏
-展示的全部信息；强行接管会丢失 Git 状态、模式、目标或后台任务等内容。配额进度和
-重置时间继续通过 Kimi CLI 内的 `/usage` 查看。
+LLM HUD 不接管 Kimi CLI 的工具栏，因为外部状态栏无法获得内置栏展示的全部信息。安装时 Kimi 显示为 `builtin`，解除集成时没有配置需要恢复。
 
-安装时 Kimi 会显示为 `builtin`，不会修改其配置，因此卸载时也没有需要恢复的内容。
-这项集成不依赖 Kimi 的配置接口，所以没有由 LLM HUD 引入的配置功能最低版本；
-`/usage` 的行为以
-[Kimi Code CLI 命令文档](https://moonshotai.github.io/kimi-cli/en/reference/slash-commands.html#usage)
-为准。
+Kimi Code 平台账户可以在 Kimi CLI 中使用 [`/usage`](https://moonshotai.github.io/kimi-cli/en/reference/slash-commands.html#usage) 查看配额；其他 provider 或 API key 不一定提供该命令的数据。
 
-## 项目结构
+## 常见问题
 
-```text
-install.sh                       一键安装入口
-bin/llm-hud                      源码树命令入口
-scripts/llm-hud-dispatcher       安装后固定的稳定分发器
-scripts/runtime_control.py       独立于当前版本的启动与回退控制
-src/llm_hud/
-├── _platform.py                 Windows/POSIX 文件锁和权限差异
-├── _tomllib.py                  标准库与内置 Tomli 的兼容入口
-├── _vendor/tomli/               Python 3.9/3.10 使用的 TOML 解析器
-├── _version.py                  唯一版本号来源
-├── cli.py                       命令行入口
-├── hud.py                       通用 HUD 数据模型和渲染器
-├── installer.py                 安装、更新和启动器管理
-├── runtime.py                   版本化运行时与原子切换
-├── paths.py                     配置和状态路径
-├── storage.py                   原子文件与 JSON 操作
-├── toml_edit.py                 保守修改 Codex TOML 配置
-└── providers/
-    ├── base.py                  提供方接口
-    ├── claude.py                Claude Code 集成
-    ├── codex.py                 Codex CLI 原生状态栏集成
-    └── kimi.py                  Kimi CLI 内置工具栏集成
-```
+### 安装后找不到 `llm-hud`
 
-## 开发与测试
+先使用完整路径运行 `~/.local/bin/llm-hud doctor`，再按安装器输出把 `~/.local/bin` 加入 Shell 的 `PATH`。自定义了 `LLM_HUD_BIN_DIR` 时使用对应目录。
 
-开发同样需要 Python 3.9 或更高版本。建议明确指定可用版本：
+### 没有检测到受支持的 CLI
+
+运行时和启动器可能已经安装，但 provider 配置会失败并返回非零状态。安装 Claude Code、Codex CLI 或 Kimi CLI 后，运行 `llm-hud install` 重新配置。
+
+### 配置操作报告冲突或错误
+
+停止正在写同一配置文件的其他程序，检查当前配置，再重试。LLM HUD 只有在能够证明改动可以安全合并时才会继续：完整恢复到安装前状态会被识别，Codex 解除集成时也会保留后来新增的非受管状态栏字段；无法证明安全时会拒绝覆盖。
+
+`llm-hud uninstall --forget` 只删除 LLM HUD 保存的恢复记录，不修改任何 provider 配置。它会放弃以后自动恢复原配置的能力，只应在确认不再需要该记录时使用。
+
+## 高级安装
+
+安装指定 Release：
 
 ```bash
-python3.9 -m unittest discover -s tests -t . -v
-python3.9 -m pip install 'ruff==0.16.*'
-python3.9 -m ruff check --no-cache src tests scripts
-sh -n install.sh
-python3.9 bin/llm-hud providers
+curl -fsSL https://github.com/codermali/llm-hud/releases/download/vX.Y.Z/install.sh | sh
 ```
 
-测试使用临时的 HOME、配置和状态路径，不会修改本机真实的 Claude Code 或 Codex CLI
-配置。GitHub Actions 在 Linux、macOS 和原生 Windows 上覆盖 Python 3.9
-最低版本、关键边界和较新 Python 版本，并在 Windows 上覆盖安装
-失败恢复和运行时并发锁，并通过 Git Bash 完成安装、升级、`rollback`、`doctor` 与
-卸载烟测。
+从本地源码目录安装：
 
-状态栏热路径有端到端基准脚本 `scripts/bench_render.py`（用法见脚本注释）。结果会显著
-受安装时固定的 Python、硬件、文件系统和缓存状态影响；记录这些条件后再比较数据。
-该脚本不拆分解释器启动、稳定控制层校验、模块导入和渲染各自的耗时，因此不应从总
-耗时反推出其中某一步的开销。
+```bash
+./install.sh
+```
 
-## 发布
+安装器依次尝试 `python3.14` 到 `python3.9`，然后尝试 `python3` 和 `python`。通过远程安装指定解释器：
 
-维护者先更新 `src/llm_hud/_version.py`，再把同版本的 `vX.Y.Z` 标签推送到 GitLab；
-标签由仓库镜像同步到 GitHub。Release 工作流会核对标签与代码版本、运行测试，并
-发布 `llm-hud.tar.gz`、`install.sh` 和 `SHA256SUMS`。创建标签和正式发布仍由维护者
-主动决定。
+```bash
+curl -fsSL https://github.com/codermali/llm-hud/releases/latest/download/install.sh \
+  | LLM_HUD_PYTHON=/path/to/python3.9 sh
+```
 
-提供方状态文件带有 schema 版本号。`rollback` 只切换运行时、不迁移状态，因此每个
-版本都必须能读取上一个发布版本写出的 schema；写出的 schema 由
-`tests/test_state_abi.py` 钉住，升级 schema 必须同步修改该测试并保留旧 schema 的
-读取能力。
+| 变量 | 用途 | 默认行为 |
+| --- | --- | --- |
+| `LLM_HUD_PYTHON` | 固定运行 LLM HUD 的 Python | 自动寻找 Python 3.9+ |
+| `LLM_HUD_INSTALL_DIR` | 版本化运行时目录 | `$HOME/.local/share/llm-hud` |
+| `LLM_HUD_BIN_DIR` | 启动器目录 | `$HOME/.local/bin` |
+| `LLM_HUD_STATE_DIR` | provider 恢复状态目录 | 当前用户 home 下的 `.config/llm-hud`；设置 `LLM_HUD_HOME` 后随之改变 |
+| `LLM_HUD_HOME` | provider 配置查找、默认状态目录和 HUD 路径缩写使用的 home | 当前用户 home；不改变 Shell 安装器从 `$HOME` 推导的运行时和启动器目录 |
+| `LLM_HUD_TARBALL_URL` | 自定义源码包地址 | 与安装脚本同版本的 GitHub Release 包 |
+| `LLM_HUD_CHECKSUM_URL` | 自定义 SHA-256 清单 | 默认包使用同一 Release 的清单；自定义 tarball 时必须显式设置，否则跳过校验 |
+
+自定义 tarball 时应同时提供对应的 checksum URL；否则不会执行 SHA-256 校验。
+
+## 开发与维护
+
+项目当前处于 0.x / Alpha 阶段。开发环境、测试命令和项目结构见 [CONTRIBUTING.md](CONTRIBUTING.md)；版本化运行时、状态 ABI 和发布流程见 [维护者文档](docs/maintainers.md)。问题报告可提交到 [GitHub Issues](https://github.com/codermali/llm-hud/issues)，请附上操作系统、Python 版本、目标 CLI 版本、`llm-hud --version` 和 `llm-hud doctor` 输出。
 
 ## 许可证
 
-本项目使用 [MIT License](LICENSE)。
-为兼容 Python 3.9 和 3.10，源码内置了同为 MIT 许可的 Tomli 2.2.1；其许可证保留在
-[`src/llm_hud/_vendor/tomli/LICENSE`](src/llm_hud/_vendor/tomli/LICENSE)。
+本项目使用 [MIT License](LICENSE)。为兼容 Python 3.9 和 3.10，源码内置了同为 MIT 许可的 Tomli 2.2.1；其许可证位于 [`src/llm_hud/_vendor/tomli/LICENSE`](src/llm_hud/_vendor/tomli/LICENSE)。
