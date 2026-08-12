@@ -20,7 +20,7 @@ from llm_hud.storage import JOURNAL_SCHEMAS
 from tests.support import Environment
 
 
-# Schemas written and read by the previous release (v0.2.0), plus the schemas
+# Schemas written and read by the previous release (v0.3.0), plus the schemas
 # written by the current tree. Advance these pins after every release: the
 # current runtime must read N-1 state, and N-1 must also be able to read state
 # written before a rollback to it.

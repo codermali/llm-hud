@@ -132,7 +132,7 @@ class StableDispatcherTests(unittest.TestCase):
                 PREVIOUS_RUNTIME_FIXTURE,
                 root / "versions" / PREVIOUS_RUNTIME_RELEASE,
             )
-            current = create_runtime(root, "current", "0.3.0")
+            current = create_runtime(root, "current", "0.3.1")
             activate(root, PREVIOUS_RUNTIME_RELEASE)
             activate(root, current)
 
