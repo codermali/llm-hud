@@ -22,6 +22,38 @@ class HudTests(unittest.TestCase):
                 "5h  ████████░░   76% used    7d  ██████░░░░   59% used",
             )
 
+    def test_windows_path_inside_home_uses_forward_slashes(self):
+        snapshot = HudSnapshot(
+            provider="Claude", cwd=r"C:\Users\Example\Desktop\llm-hud"
+        )
+        with Environment(LLM_HUD_HOME=r"c:\users\example"):
+            self.assertEqual(
+                render_hud(snapshot, color=False),
+                "Claude · ~/Desktop/llm-hud",
+            )
+
+    def test_windows_path_outside_home_keeps_drive_and_uses_forward_slashes(self):
+        snapshot = HudSnapshot(provider="Claude", cwd=r"D:\work\llm-hud")
+        with Environment(LLM_HUD_HOME=r"C:\Users\Example"):
+            self.assertEqual(
+                render_hud(snapshot, color=False),
+                "Claude · D:/work/llm-hud",
+            )
+
+    def test_windows_unc_paths_are_compacted_and_normalized(self):
+        snapshot = HudSnapshot(
+            provider="Claude", cwd=r"\\server\share\Users\Example\llm-hud"
+        )
+        with Environment(LLM_HUD_HOME=r"\\server\share\Users\Example"):
+            self.assertEqual(render_hud(snapshot, color=False), "Claude · ~/llm-hud")
+
+        snapshot = HudSnapshot(provider="Claude", cwd=r"\\server\other\llm-hud")
+        with Environment(LLM_HUD_HOME=r"\\server\share\Users\Example"):
+            self.assertEqual(
+                render_hud(snapshot, color=False),
+                "Claude · //server/other/llm-hud",
+            )
+
     def test_windows_without_data_render_placeholder_bars(self):
         snapshot = HudSnapshot(
             provider="Claude",

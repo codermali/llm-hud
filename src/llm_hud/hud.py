@@ -5,12 +5,13 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 BAR_WIDTH = 10
+WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
 @dataclass(frozen=True)
@@ -66,13 +67,32 @@ def _truncate_left(value: str, width: int) -> str:
 def _compact_path(value: str | None) -> str | None:
     if not value:
         return None
-    path = Path(value).expanduser()
-    home = Path(os.environ.get("LLM_HUD_HOME", Path.home())).expanduser()
+    path_value = os.path.expanduser(value)
+    home_value = os.path.expanduser(
+        os.environ.get("LLM_HUD_HOME", str(Path.home()))
+    )
+
+    # cwd is upstream data, so its syntax need not match the host running the HUD
+    # (tests, remote sessions, and WSL can all cross that boundary). Pure paths let
+    # us interpret Windows paths consistently on every platform. Prefer an
+    # explicitly POSIX cwd over a Windows-shaped local home so `/tmp` remains
+    # `/tmp` when the portable test suite runs on Windows.
+    if WINDOWS_DRIVE_RE.match(path_value) or path_value.startswith(("\\\\", "//")):
+        path_type = PureWindowsPath
+    elif path_value.startswith("/"):
+        path_type = PurePosixPath
+    elif WINDOWS_DRIVE_RE.match(home_value) or home_value.startswith(("\\\\", "//")):
+        path_type = PureWindowsPath
+    else:
+        path_type = PurePosixPath
+
+    path = path_type(path_value)
+    home = path_type(home_value)
     try:
         relative = path.relative_to(home)
     except ValueError:
-        return str(path)
-    return "~" if not relative.parts else f"~/{relative}"
+        return path.as_posix()
+    return "~" if not relative.parts else f"~/{relative.as_posix()}"
 
 
 def _percent(value: float | None) -> str:

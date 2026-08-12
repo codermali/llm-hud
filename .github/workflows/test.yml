@@ -45,6 +45,7 @@ jobs:
           python -m unittest -v
           tests.test_claude
           tests.test_codex
+          tests.test_hud
           tests.test_kimi
           tests.test_runtime
           tests.test_stable_control
