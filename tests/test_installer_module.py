@@ -1433,6 +1433,119 @@ class RuntimeInstallerTests(unittest.TestCase):
                 )
             )
 
+    def test_interrupted_repair_backup_survives_the_next_failed_install(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            owned_root(root)
+            first, _ = install_runtime_from_source(ROOT, root)
+            activation_before = (root / "activation").read_bytes()
+            installed = runtime_path(root, first.release_id)
+            corrupt = b"corrupt active runtime\n"
+            (installed / "README.md").write_bytes(corrupt)
+            original_rename = installer_module.os.rename
+
+            def interrupt_after_quarantine(source, destination):
+                if Path(source).name.startswith(STAGING_PREFIX) and Path(
+                    destination
+                ).resolve(strict=False) == installed.resolve(strict=False):
+                    raise KeyboardInterrupt("simulated process interruption")
+                return original_rename(source, destination)
+
+            with mock.patch(
+                "llm_hud.installer.os.rename",
+                side_effect=interrupt_after_quarantine,
+            ):
+                with self.assertRaisesRegex(
+                    KeyboardInterrupt,
+                    "simulated process interruption",
+                ):
+                    install_runtime_from_source(ROOT, root)
+
+            versions = root / VERSIONS_DIR_NAME
+            self.assertFalse(installed.exists())
+            self.assertEqual((root / "activation").read_bytes(), activation_before)
+            self.assertTrue(
+                any(
+                    path.name.endswith(installer_module.RUNTIME_TRASH_RECORD_SUFFIX)
+                    and path.read_text().startswith(
+                        installer_module.RUNTIME_REPAIR_BACKUP_RECORD_VALUE
+                    )
+                    for path in versions.iterdir()
+                )
+            )
+
+            with mock.patch(
+                "llm_hud.installer._smoke_test_runtime_candidate",
+                side_effect=RuntimeLayoutError("simulated next candidate failure"),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeLayoutError,
+                    "simulated next candidate failure",
+                ):
+                    install_runtime_from_source(ROOT, root)
+
+            self.assertTrue(installed.is_dir())
+            self.assertEqual((installed / "README.md").read_bytes(), corrupt)
+            self.assertEqual((root / "activation").read_bytes(), activation_before)
+            self.assertFalse(
+                any(
+                    path.name.startswith(installer_module.RUNTIME_TRASH_PREFIX)
+                    for path in versions.iterdir()
+                )
+            )
+
+            repaired, _ = install_runtime_from_source(ROOT, root)
+
+            self.assertEqual(repaired, first)
+            self.assertEqual(validate_runtime(root, first.release_id), first)
+
+    def test_completed_repair_makes_an_interrupted_backup_discardable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            owned_root(root)
+            first, _ = install_runtime_from_source(ROOT, root)
+            installed = runtime_path(root, first.release_id)
+            (installed / "README.md").write_text("corrupt active runtime\n")
+
+            with mock.patch(
+                "llm_hud.installer._discard_runtime_trash",
+                side_effect=KeyboardInterrupt("simulated process interruption"),
+            ):
+                with self.assertRaisesRegex(
+                    KeyboardInterrupt,
+                    "simulated process interruption",
+                ):
+                    install_runtime_from_source(ROOT, root)
+
+            versions = root / VERSIONS_DIR_NAME
+            self.assertEqual(validate_runtime(root, first.release_id), first)
+            self.assertTrue(
+                any(
+                    path.name.startswith(installer_module.RUNTIME_TRASH_PREFIX)
+                    for path in versions.iterdir()
+                )
+            )
+
+            with mock.patch(
+                "llm_hud.installer._smoke_test_runtime_candidate",
+                side_effect=RuntimeLayoutError("simulated next candidate failure"),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeLayoutError,
+                    "simulated next candidate failure",
+                ):
+                    install_runtime_from_source(ROOT, root)
+
+            self.assertEqual(validate_runtime(root, first.release_id), first)
+            self.assertFalse(
+                any(
+                    path.name.startswith(installer_module.RUNTIME_TRASH_PREFIX)
+                    for path in versions.iterdir()
+                )
+            )
+
     def test_unsafe_source_leaves_existing_activation_unchanged(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

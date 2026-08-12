@@ -51,6 +51,7 @@ RUNTIME_TRASH_PREFIX = ".llm-hud-trash-"
 RUNTIME_TRASH_RECORD_SUFFIX = ".record"
 RUNTIME_TRASH_PAYLOAD_SUFFIX = ".runtime"
 RUNTIME_TRASH_RECORD_VALUE = "llm-hud-runtime-trash-v1"
+RUNTIME_REPAIR_BACKUP_RECORD_VALUE = "llm-hud-runtime-repair-backup-v1"
 RUNTIME_TRASH_TOKEN_BYTES = 16
 LAUNCHER_STATE_SCHEMA = 1
 DISPATCHER_SOURCE = Path("scripts") / "llm-hud-dispatcher"
@@ -90,6 +91,15 @@ class _RuntimeTrash:
     record: Path
     payload: Path
     identity: tuple[int, int]
+
+
+@dataclass(frozen=True)
+class _ManagedRuntimeTrash:
+    record: Path
+    payload: Path
+    release_id: str
+    repair_backup: bool
+    identity: tuple[int, int] | None
 
 
 def _metadata(path: Path, description: str) -> os.stat_result:
@@ -1101,8 +1111,18 @@ def _trash_token(name: str, suffix: str) -> str | None:
     return token
 
 
-def _trash_record_payload(release_id: str, token: str) -> str:
-    return f"{RUNTIME_TRASH_RECORD_VALUE} {token} {release_id}\n"
+def _trash_record_payload(
+    release_id: str,
+    token: str,
+    *,
+    repair_backup: bool = False,
+) -> str:
+    record_value = (
+        RUNTIME_REPAIR_BACKUP_RECORD_VALUE
+        if repair_backup
+        else RUNTIME_TRASH_RECORD_VALUE
+    )
+    return f"{record_value} {token} {release_id}\n"
 
 
 def _same_directory(path: Path, identity: tuple[int, int]) -> bool:
@@ -1117,36 +1137,89 @@ def _same_directory(path: Path, identity: tuple[int, int]) -> bool:
     )
 
 
-def _managed_trash_payload(
+def _managed_runtime_trash(
     versions: Path, token: str
-) -> tuple[Path | None, tuple[int, int] | None] | None:
+) -> _ManagedRuntimeTrash | None:
     record, payload = _trash_paths(versions, token)
     try:
         raw = _read_regular_bytes(record, "runtime trash record").decode("utf-8")
     except (OSError, RuntimeLayoutError, UnicodeError):
         return None
     parts = raw.removesuffix("\n").split(" ")
+    if len(parts) != 3 or parts[1] != token:
+        return None
+    repair_backup = parts[0] == RUNTIME_REPAIR_BACKUP_RECORD_VALUE
     if (
-        len(parts) != 3
-        or parts[0] != RUNTIME_TRASH_RECORD_VALUE
-        or parts[1] != token
-        or raw != _trash_record_payload(parts[2], token)
+        parts[0] not in {
+            RUNTIME_TRASH_RECORD_VALUE,
+            RUNTIME_REPAIR_BACKUP_RECORD_VALUE,
+        }
+        or raw
+        != _trash_record_payload(
+            parts[2],
+            token,
+            repair_backup=repair_backup,
+        )
     ):
         return None
     try:
         validate_release_id(parts[2])
         metadata = payload.lstat()
     except FileNotFoundError:
-        return None, None
+        return _ManagedRuntimeTrash(
+            record,
+            payload,
+            parts[2],
+            repair_backup,
+            None,
+        )
     except (OSError, RuntimeLayoutError):
         return None
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
         return None
-    return payload, (metadata.st_dev, metadata.st_ino)
+    return _ManagedRuntimeTrash(
+        record,
+        payload,
+        parts[2],
+        repair_backup,
+        (metadata.st_dev, metadata.st_ino),
+    )
 
 
-def _remove_managed_runtime_trash(versions: Path) -> None:
-    """Best-effort removal of trash proven to have been created by this installer."""
+def _restore_interrupted_runtime_repair(
+    versions: Path,
+    managed: _ManagedRuntimeTrash,
+) -> bool:
+    """Restore a repair backup only while its release name remains absent."""
+    if managed.identity is None or not _same_directory(
+        managed.payload, managed.identity
+    ):
+        return False
+    destination = versions / managed.release_id
+    try:
+        destination.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return False
+    else:
+        return False
+    try:
+        os.rename(managed.payload, destination)
+        _fsync_directory_required(versions)
+        _fsync_directory_required(versions.parent)
+    except (OSError, RuntimeLayoutError):
+        return False
+    try:
+        managed.record.unlink()
+    except OSError:
+        pass
+    fsync_directory(versions)
+    return True
+
+
+def _reconcile_managed_runtime_trash(versions: Path) -> None:
+    """Recover interrupted repairs, then remove discardable managed trash."""
     try:
         entries = list(os.scandir(versions))
     except OSError:
@@ -1159,29 +1232,37 @@ def _remove_managed_runtime_trash(versions: Path) -> None:
     }
     changed = False
     for token in tokens:
-        managed = _managed_trash_payload(versions, token)
+        managed = _managed_runtime_trash(versions, token)
         if managed is None:
             continue
-        payload, payload_identity = managed
-        record, _ = _trash_paths(versions, token)
-        if payload is None or payload_identity is None:
+        if managed.identity is None:
             try:
-                record.unlink()
+                managed.record.unlink()
             except OSError:
                 pass
             else:
                 changed = True
             continue
-        if not _same_directory(payload, payload_identity):
+        if managed.repair_backup:
+            if _restore_interrupted_runtime_repair(versions, managed):
+                changed = True
+                continue
+            try:
+                validate_runtime(versions.parent, managed.release_id)
+            except RuntimeLayoutError:
+                # Never overwrite an occupied release name or discard the only
+                # known backup while the replacement is also invalid.
+                continue
+        if not _same_directory(managed.payload, managed.identity):
             continue
         try:
-            shutil.rmtree(payload)
+            shutil.rmtree(managed.payload)
         except OSError:
             try:
-                payload.lstat()
+                managed.payload.lstat()
             except FileNotFoundError:
                 try:
-                    record.unlink()
+                    managed.record.unlink()
                 except OSError:
                     pass
                 changed = True
@@ -1189,7 +1270,7 @@ def _remove_managed_runtime_trash(versions: Path) -> None:
                 pass
             continue
         try:
-            record.unlink()
+            managed.record.unlink()
         except OSError:
             # A missing record makes the empty trash name inert. Never delete
             # an unmarked directory merely because its name resembles ours.
@@ -1205,6 +1286,7 @@ def _quarantine_runtime(
     release_id: str,
     *,
     expected_identity: tuple[int, int],
+    repair_backup: bool = False,
 ) -> _RuntimeTrash | None:
     """Move one exact runtime inode aside and retain its managed trash record."""
     if not _same_directory(path, expected_identity):
@@ -1231,7 +1313,11 @@ def _quarantine_runtime(
     try:
         atomic_write_text(
             record,
-            _trash_record_payload(release_id, token),
+            _trash_record_payload(
+                release_id,
+                token,
+                repair_backup=repair_backup,
+            ),
             mode=0o600,
             follow_symlinks=False,
         )
@@ -1348,6 +1434,7 @@ def _replace_invalid_runtime_unlocked(
         destination,
         metadata.release_id,
         expected_identity=expected_identity,
+        repair_backup=True,
     )
     if trash is None:
         raise RuntimeLayoutError(
@@ -1406,7 +1493,7 @@ def _prune_inactive_runtimes(root: Path, *, lock_timeout: float = 10.0) -> None:
         if activation.previous is not None:
             keep.add(activation.previous)
         versions = root / VERSIONS_DIR_NAME
-        _remove_managed_runtime_trash(versions)
+        _reconcile_managed_runtime_trash(versions)
         try:
             entries = list(os.scandir(versions))
         except OSError:
@@ -1548,7 +1635,7 @@ def _install_runtime_from_source(
     initialize_layout(root)
     try:
         with RuntimeLock(root):
-            _remove_managed_runtime_trash(root / VERSIONS_DIR_NAME)
+            _reconcile_managed_runtime_trash(root / VERSIONS_DIR_NAME)
     except RuntimeLayoutError:
         pass  # trash collection is best effort and must not block an install
     try:
