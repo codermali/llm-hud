@@ -294,7 +294,7 @@ class CodexProviderTests(unittest.TestCase):
                 self.assertIn("--forget", result.message)
                 self.assertEqual(status_line(config), changed)
 
-    def test_install_does_not_overwrite_a_concurrent_config_edit(self):
+    def test_install_rejects_a_config_edit_observed_before_replace(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = root / "config.toml"
@@ -326,7 +326,7 @@ class CodexProviderTests(unittest.TestCase):
             self.assertFalse(state_path.exists())
             self.assertFalse((providers_dir / "codex.journal.json").exists())
 
-    def test_uninstall_does_not_overwrite_a_concurrent_config_edit(self):
+    def test_uninstall_rejects_a_config_edit_observed_before_replace(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = root / "config.toml"

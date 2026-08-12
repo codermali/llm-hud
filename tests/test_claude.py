@@ -294,7 +294,7 @@ class ClaudeProviderTests(unittest.TestCase):
                     "my-new-footer",
                 )
 
-    def test_install_does_not_overwrite_a_concurrent_settings_edit(self):
+    def test_install_rejects_a_settings_edit_observed_before_replace(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             settings = root / "settings.json"
@@ -325,7 +325,7 @@ class ClaudeProviderTests(unittest.TestCase):
             self.assertFalse(state_path.exists())
             self.assertFalse((providers_dir / "claude.journal.json").exists())
 
-    def test_uninstall_does_not_overwrite_a_concurrent_settings_edit(self):
+    def test_uninstall_rejects_a_settings_edit_observed_before_replace(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             settings = root / "settings.json"

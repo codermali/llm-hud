@@ -126,7 +126,7 @@ class AtomicWriteTests(unittest.TestCase):
             self.assertEqual(first.read_text(), "first")
             self.assertEqual(second.read_text(), "second")
 
-    def test_expected_content_rejects_a_concurrent_edit(self):
+    def test_expected_content_rejects_an_edit_made_before_validation(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"
             path.write_text('{"theme":"light"}\n')
@@ -144,7 +144,7 @@ class AtomicWriteTests(unittest.TestCase):
                 path.read_text(), '{"theme":"dark","external":true}\n'
             )
 
-    def test_expected_absence_rejects_a_concurrently_created_file(self):
+    def test_expected_absence_rejects_a_file_created_before_validation(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"
             path.write_text('{"external":true}\n')

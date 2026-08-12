@@ -28,12 +28,12 @@ _EXPECTED_CONTENT_UNSET = object()
 
 
 class ProviderLock:
-    """Serialize all state/config transactions for one provider.
+    """Serialize llm-hud state/config transactions for one provider.
 
     The lock file lives beside the provider state.  Keeping this lock separate
     from the provider configuration is important: editors commonly replace
     configuration files, which would silently discard a lock held on the old
-    inode.
+    inode. External editors do not participate in this lock.
     """
 
     def __init__(self, state_path: Path, timeout: float = 10.0) -> None:
@@ -246,12 +246,13 @@ def validate_state_path(state: dict[str, Any], key: str, current: Path) -> Path:
 
 
 def read_text_snapshot(path: Path) -> tuple[str, bytes | None]:
-    """Read UTF-8 text together with the exact bytes used for a later CAS.
+    """Read UTF-8 text and retain the bytes for a late pre-commit check.
 
     ``None`` distinguishes an absent file from an existing empty file.  The
-    caller should pass the byte snapshot back to ``atomic_write_*`` so an
-    editor that changes the file during a provider transaction is detected
-    instead of overwritten.
+    caller should pass the byte snapshot back to ``atomic_write_*`` so changes
+    observed before the final replacement are rejected. This is not a portable
+    compare-and-swap: an external writer can still race the interval between
+    the final check and ``os.replace()``.
     """
     try:
         content = path.read_bytes()
@@ -267,7 +268,7 @@ def validate_text_snapshot(
     expected_content: bytes | None,
     follow_symlinks: bool = True,
 ) -> None:
-    """Reject a target or content change without rewriting the file."""
+    """Reject a target or content change observable at the time of this check."""
     try:
         expected = expected_target.resolve(strict=False)
     except (OSError, ValueError, RuntimeError) as error:
@@ -342,9 +343,10 @@ def atomic_write_text(
                 expected_content, bytes
             ):
                 raise TypeError("expected_content must be bytes or None")
-            # Resolve again as late as possible.  This catches a symlink being
-            # retargeted after the provider took its snapshot, while the byte
-            # comparison catches in-place writes and atomic editor renames.
+            # Resolve again as late as practical. This detects a symlink
+            # retarget or content replacement that happened after the provider
+            # took its snapshot but before this check. An external writer can
+            # still race this check and the final os.replace() below.
             validate_text_snapshot(
                 path,
                 expected_target=target,
