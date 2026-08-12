@@ -211,6 +211,9 @@ src/llm_hud/
 
 ```bash
 python3.12 -m unittest discover -s tests -t . -v
+python3.12 -m pip install 'ruff==0.16.*'
+python3.12 -m ruff check src tests scripts
+sh -n install.sh
 python3.12 bin/llm-hud providers
 ```
 
