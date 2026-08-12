@@ -42,15 +42,24 @@ def find_exact_python(major: int, minor: int) -> str | None:
     return None
 
 
+def tracked_source_paths() -> list[Path]:
+    result = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files", "-z", "--cached"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    )
+    return sorted(
+        Path(os.fsdecode(raw))
+        for raw in result.stdout.split(b"\0")
+        if raw
+    )
+
+
 def make_source_archive(archive: Path) -> None:
     with tarfile.open(archive, "w:gz") as bundle:
-        for path in sorted(ROOT.rglob("*")):
-            relative = path.relative_to(ROOT)
-            if any(
-                part == ".git" or part == "__pycache__"
-                for part in relative.parts
-            ) or path.suffix in (".pyc", ".pyo"):
-                continue
+        for relative in tracked_source_paths():
+            path = ROOT / relative
             bundle.add(
                 path,
                 arcname=Path("llm-hud-main") / relative,
@@ -108,6 +117,19 @@ def run_installer(
 
 
 class InstallerRootSafetyTests(unittest.TestCase):
+    def test_test_release_archive_contains_only_tracked_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "llm-hud.tar.gz"
+            make_source_archive(archive)
+
+            with tarfile.open(archive, "r:gz") as bundle:
+                archived = {
+                    Path(member.name).relative_to("llm-hud-main")
+                    for member in bundle.getmembers()
+                }
+
+        self.assertEqual(archived, set(tracked_source_paths()))
+
     def test_python_detection_prefers_3_14_and_keeps_supported_fallbacks(self):
         self.assertIn(
             "for candidate in python3.14 python3.13 python3.12 python3.11 "
