@@ -22,8 +22,8 @@ Claude · Opus · ~/projects/example
 5h  ██░░░░░░░░   24% used  ↻ 14:30    7d  ████░░░░░░   41% used  ↻ Fri 09:00
 ```
 
-额度按"已用百分比"显示,与 Claude Code 自带的 `/status` 用量页同一口径:条形越满
-表示用得越多,超过 70% 变红。
+额度按“已用百分比”显示，与 Claude Code 自带的 `/status` 用量页同一口径：条形越满
+表示用得越多，超过 70% 变红。
 
 额度数据由 Claude Code 提供，只在 Claude Pro/Max 订阅账户上出现，并且要等到会话的
 首次响应之后。没有额度数据时（首次响应之前，或使用 API key 等不提供额度的账户），
@@ -51,7 +51,7 @@ gpt-5.6 xhigh · ~/projects/example · 5h 82% left · weekly 63% left · Context
 原生 Windows 适配本身不需要 WSL，但安装、更新和 `llm-hud` 管理命令目前必须在
 Git Bash 中运行；PowerShell/CMD 直装尚未提供。运行时和各 CLI 仍是原生 Windows
 进程，现有版本化安装、原子切换和 `rollback` 都会保留。Git Bash 也符合上游行为：
-Claude Code 在 Windows 上优先用它运行状态栏命令，Kimi Code 目前同样要求 Git for
+Claude Code 在 Windows 上优先用它运行状态栏命令，Kimi CLI 目前同样要求 Git for
 Windows。
 
 ## 安装
