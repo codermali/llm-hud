@@ -9,13 +9,12 @@ Produce an isolated install first, e.g.:
     LLM_HUD_STATE_DIR=/tmp/hud/state \
     LLM_HUD_CLAUDE_SETTINGS=/tmp/hud/claude.json \
     LLM_HUD_CODEX_CONFIG=/tmp/hud/codex.toml \
-    LLM_HUD_CLAUDE_BIN=1 ./install.sh
+    LLM_HUD_CLAUDE_BIN=python3 ./install.sh
 
-Baseline (2026-08, Apple Silicon, APFS, warm cache): ~38 ms per tick, of
-which the control layer's full runtime digest costs ~1.7 ms and interpreter
-startup ~7.5 ms; the rest is module imports. That measurement is why dispatch
-still verifies the full digest: skipping it would require a stable-protocol
-revision to save under 5% of the tick. Re-measure here before revisiting.
+This script measures the complete launcher-to-render path. It does not split
+interpreter startup, stable-control validation, imports, or rendering. Compare
+runs only when the pinned interpreter, filesystem, hardware, and cache state
+are recorded and comparable.
 """
 
 from __future__ import annotations
