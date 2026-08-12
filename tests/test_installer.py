@@ -25,6 +25,11 @@ def make_legacy_runtime(install_dir: Path) -> None:
         shutil.copytree(ROOT / name, install_dir / name)
     for name in ("README.md", "LICENSE", "pyproject.toml"):
         shutil.copy2(ROOT / name, install_dir / name)
+    # Flat legacy installs are by definition version 0.1.0 on disk; the
+    # adoption check pins that version, so the fixture must too.
+    (install_dir / "src" / "llm_hud" / "_version.py").write_text(
+        '__version__ = "0.1.0"\n'
+    )
 
 
 def make_source_archive(archive: Path) -> None:

@@ -52,6 +52,14 @@ def copy_runtime_checkout(destination: Path) -> None:
         shutil.copy2(ROOT / name, destination / name)
 
 
+def copy_legacy_runtime(destination: Path) -> None:
+    """A flat legacy install is by definition version 0.1.0 on disk."""
+    copy_runtime_checkout(destination)
+    (destination / "src" / "llm_hud" / "_version.py").write_text(
+        '__version__ = "0.1.0"\n'
+    )
+
+
 class RuntimeInstallerTests(unittest.TestCase):
     def test_stable_protocol_v1_bytes_are_frozen(self):
         tools = installer_module.load_stable_tools(ROOT)
@@ -264,8 +272,8 @@ class RuntimeInstallerTests(unittest.TestCase):
             unsafe = base / "unsafe"
             safe.mkdir()
             unsafe.mkdir()
-            copy_runtime_checkout(safe)
-            copy_runtime_checkout(unsafe)
+            copy_legacy_runtime(safe)
+            copy_legacy_runtime(unsafe)
             (unsafe / "user-sentinel").write_text("keep")
 
             claim_install_root(safe, allow_legacy=True)
