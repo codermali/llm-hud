@@ -105,8 +105,23 @@ class RuntimeInstallerTests(unittest.TestCase):
             ):
                 installer_module._prune_inactive_runtimes(root)
 
-            versions = root / VERSIONS_DIR_NAME
-            self.assertFalse((versions / releases[0]).exists())
+                versions = root / VERSIONS_DIR_NAME
+                self.assertFalse((versions / releases[0]).exists())
+                self.assertTrue(
+                    any(
+                        path.name.endswith(
+                            installer_module.RUNTIME_TRASH_PAYLOAD_SUFFIX
+                        )
+                        for path in versions.iterdir()
+                    )
+                )
+
+                # A Windows sharing violation can persist across the next
+                # install. The quarantined name must not reserve release_id.
+                metadata, _ = install_runtime_from_source(sources[0], root)
+
+            self.assertEqual(metadata.release_id, releases[0])
+            self.assertEqual(validate_runtime(root, releases[0]), metadata)
             self.assertTrue(
                 any(
                     path.name.endswith(installer_module.RUNTIME_TRASH_PAYLOAD_SUFFIX)
@@ -114,10 +129,38 @@ class RuntimeInstallerTests(unittest.TestCase):
                 )
             )
 
-            metadata, _ = install_runtime_from_source(sources[0], root)
+    def test_failed_trash_rename_keeps_the_original_runtime_valid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "runtime"
+            root.mkdir()
+            owned_root(root)
+            releases = []
+            for index in range(3):
+                source = base / f"source-{index}"
+                source.mkdir()
+                copy_runtime_checkout(source)
+                with (source / "README.md").open("a") as handle:
+                    handle.write(f"\nrename fixture {index}\n")
+                metadata, _ = install_runtime_from_source(source, root)
+                releases.append(metadata.release_id)
 
-            self.assertEqual(metadata.release_id, releases[0])
-            self.assertEqual(validate_runtime(root, releases[0]), metadata)
+            versions = root / VERSIONS_DIR_NAME
+            target = versions / releases[0]
+            original_rename = installer_module.os.rename
+
+            def fail_target_rename(source, destination):
+                if Path(source) == target:
+                    raise OSError("simulated Windows sharing violation")
+                return original_rename(source, destination)
+
+            with mock.patch(
+                "llm_hud.installer.os.rename",
+                side_effect=fail_target_rename,
+            ):
+                installer_module._prune_inactive_runtimes(root)
+
+            self.assertEqual(validate_runtime(root, releases[0]).release_id, releases[0])
             self.assertFalse(
                 any(
                     path.name.startswith(installer_module.RUNTIME_TRASH_PREFIX)
