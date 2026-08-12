@@ -82,7 +82,7 @@ class ProviderLock:
                     os.close(descriptor)
                     raise OSError(
                         f"another provider operation is in progress: {self.path}"
-                    )
+                    ) from None
                 time.sleep(0.05)
             except OSError as error:
                 os.close(descriptor)

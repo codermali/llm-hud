@@ -437,7 +437,9 @@ class RuntimeLock:
             except BlockingIOError:
                 if time.monotonic() >= deadline:
                     os.close(descriptor)
-                    raise ControlError("another runtime operation is in progress")
+                    raise ControlError(
+                        "another runtime operation is in progress"
+                    ) from None
                 time.sleep(0.05)
             except OSError as error:
                 os.close(descriptor)
@@ -529,4 +531,4 @@ if __name__ == "__main__":
         raise SystemExit(_main(sys.argv[1:]))
     except ControlError as error:
         print(f"llm-hud: {error}", file=sys.stderr)
-        raise SystemExit(1)
+        raise SystemExit(1) from None
