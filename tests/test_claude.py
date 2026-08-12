@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import stat
@@ -16,6 +17,22 @@ from tests.support import Environment
 
 
 class ClaudeProviderTests(unittest.TestCase):
+    def test_non_finite_and_boolean_usage_values_are_ignored(self):
+        for value in (True, False, math.nan, math.inf, -math.inf):
+            with self.subTest(value=value):
+                snapshot = claude_module.snapshot_from_payload(
+                    {
+                        "rate_limits": {
+                            "five_hour": {
+                                "used_percentage": value,
+                                "resets_at": value,
+                            }
+                        }
+                    }
+                )
+                self.assertIsNone(snapshot.windows[0].used)
+                self.assertIsNone(snapshot.windows[0].resets_at)
+
     def test_command_detection_requires_an_exact_renderer_argv(self):
         accepted = (
             "llm-hud render claude",

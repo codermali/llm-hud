@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shlex
 import shutil
@@ -210,16 +211,22 @@ def _used(window: object) -> float | None:
     if not isinstance(window, dict):
         return None
     value = window.get("used_percentage")
-    if not isinstance(value, (int, float)):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return max(0.0, min(100.0, float(value)))
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        return None
+    return max(0.0, min(100.0, numeric))
 
 
 def _resets_at(window: object) -> float | None:
     if not isinstance(window, dict):
         return None
     value = window.get("resets_at")
-    return float(value) if isinstance(value, (int, float)) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    numeric = float(value)
+    return numeric if math.isfinite(numeric) else None
 
 
 def _terminal_columns(payload: dict[str, Any]) -> int | None:
