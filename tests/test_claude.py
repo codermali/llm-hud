@@ -99,6 +99,7 @@ class ClaudeProviderTests(unittest.TestCase):
                             "type": "command",
                             "command": "printf existing",
                             "padding": 2,
+                            "refreshInterval": 5,
                         },
                     }
                 )
@@ -109,6 +110,9 @@ class ClaudeProviderTests(unittest.TestCase):
             ):
                 provider = ClaudeProvider()
                 provider.install("/opt/llm-hud")
+                configured = json.loads(settings.read_text())["statusLine"]
+                self.assertEqual(configured["padding"], 2)
+                self.assertEqual(configured["refreshInterval"], 5)
                 output = render(b'{"model":{"display_name":"Sonnet"}}', color=False)
                 self.assertEqual(
                     output,
@@ -120,6 +124,7 @@ class ClaudeProviderTests(unittest.TestCase):
                 restored = json.loads(settings.read_text())
                 self.assertEqual(restored["theme"], "dark")
                 self.assertEqual(restored["statusLine"]["command"], "printf existing")
+                self.assertEqual(restored["statusLine"]["refreshInterval"], 5)
 
     def test_substring_lookalike_command_is_treated_as_user_configuration(self):
         with tempfile.TemporaryDirectory() as directory:

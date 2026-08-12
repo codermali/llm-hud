@@ -77,10 +77,13 @@ def _load_settings(path: Path, *, target: Path | None = None) -> dict[str, Any]:
     return payload
 
 
-def _configured_status_line(value: object, command: str) -> dict[str, Any]:
+def _configured_status_line(
+    value: object, command: str, *, drop_refresh_interval: bool = False
+) -> dict[str, Any]:
     configured = dict(value) if isinstance(value, dict) else {}
     configured.update({"type": "command", "command": command})
-    configured.pop("refreshInterval", None)
+    if drop_refresh_interval:
+        configured.pop("refreshInterval", None)
     return configured
 
 
@@ -95,8 +98,12 @@ def _installed_status_line_from_state(state: object) -> dict[str, Any] | None:
         return dict(installed) if isinstance(installed, dict) else None
     # Schema 1 did not store the complete installed value, but it can be
     # reconstructed deterministically from the saved original and command.
+    # Schema-1 installs also stripped refreshInterval, so the reconstruction
+    # must strip it too or existing installs would stop matching on disk.
     if state.get("schema") == 1:
-        return _configured_status_line(state.get("original_status_line"), command)
+        return _configured_status_line(
+            state.get("original_status_line"), command, drop_refresh_interval=True
+        )
     return None
 
 
