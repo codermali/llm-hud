@@ -2,7 +2,12 @@ name: test
 
 on:
   push:
+    branches: ["**"]
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   unit-tests:
@@ -11,8 +16,8 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ matrix.python-version }}
       - run: python -m unittest discover -s tests -t . -v
@@ -21,8 +26,8 @@ jobs:
   old-python-guard:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.10"
       - name: Launcher refuses to run and explains why
@@ -44,7 +49,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install into an isolated prefix
         run: |
           ./install.sh
@@ -88,16 +93,18 @@ jobs:
   bootstrap-smoke:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install from a tarball the way curl | sh does
         run: |
           git archive --prefix=llm-hud-main/ HEAD | gzip > "$RUNNER_TEMP/src.tgz"
+          (cd "$RUNNER_TEMP" && sha256sum src.tgz | sed 's/src\.tgz/llm-hud.tar.gz/' > SHA256SUMS)
           mkdir -p "$RUNNER_TEMP/elsewhere"
           cd "$RUNNER_TEMP/elsewhere"
           cat "$GITHUB_WORKSPACE/install.sh" | sh
           "$RUNNER_TEMP/bin/llm-hud" --version
         env:
           LLM_HUD_TARBALL_URL: file://${{ runner.temp }}/src.tgz
+          LLM_HUD_CHECKSUM_URL: file://${{ runner.temp }}/SHA256SUMS
           LLM_HUD_INSTALL_DIR: ${{ runner.temp }}/llm-hud
           LLM_HUD_BIN_DIR: ${{ runner.temp }}/bin
           LLM_HUD_STATE_DIR: ${{ runner.temp }}/state

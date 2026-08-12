@@ -6,16 +6,22 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  tests:
+    uses: ./.github/workflows/test.yml
+
   release:
+    needs: tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
 
@@ -35,17 +41,15 @@ jobs:
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
-      - name: Run tests
-        run: python -m unittest discover -s tests -t . -v
-
       - name: Build and verify release archive
         shell: bash
         run: |
           mkdir dist
           git archive --format=tar --prefix="llm-hud-$VERSION/" "$GITHUB_SHA" |
             gzip -n > dist/llm-hud.tar.gz
+          cp install.sh dist/install.sh
           cd dist
-          sha256sum llm-hud.tar.gz > SHA256SUMS
+          sha256sum llm-hud.tar.gz install.sh > SHA256SUMS
           sha256sum --check SHA256SUMS
 
       - name: Smoke test release archive
@@ -57,6 +61,26 @@ jobs:
           output=$(python -I -B "$target/llm-hud-$VERSION/bin/llm-hud" --version)
           test "$output" = "llm-hud $VERSION"
 
+      - name: Install from the built release artifacts
+        shell: bash
+        env:
+          LLM_HUD_INSTALL_DIR: ${{ runner.temp }}/release-install/root
+          LLM_HUD_BIN_DIR: ${{ runner.temp }}/release-install/bin
+          LLM_HUD_STATE_DIR: ${{ runner.temp }}/release-install/state
+          LLM_HUD_CLAUDE_SETTINGS: ${{ runner.temp }}/release-install/claude.json
+          LLM_HUD_CODEX_CONFIG: ${{ runner.temp }}/release-install/codex.toml
+          LLM_HUD_CLAUDE_BIN: "1"
+        run: |
+          export LLM_HUD_TARBALL_URL="file://$PWD/dist/llm-hud.tar.gz"
+          export LLM_HUD_CHECKSUM_URL="file://$PWD/dist/SHA256SUMS"
+          mkdir -p "$RUNNER_TEMP/release-install/elsewhere"
+          cd "$RUNNER_TEMP/release-install/elsewhere"
+          sh "$GITHUB_WORKSPACE/dist/install.sh"
+          output=$("$LLM_HUD_BIN_DIR/llm-hud" --version)
+          test "$output" = "llm-hud $VERSION"
+          "$LLM_HUD_BIN_DIR/llm-hud" doctor
+          "$LLM_HUD_BIN_DIR/llm-hud" uninstall
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -64,6 +88,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             dist/llm-hud.tar.gz \
             dist/SHA256SUMS \
+            dist/install.sh \
             --verify-tag \
             --generate-notes \
             --title "LLM HUD $VERSION"
