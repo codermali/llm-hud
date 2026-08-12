@@ -50,6 +50,10 @@ jobs:
           git archive --format=tar --prefix="llm-hud-$VERSION/" "$GITHUB_SHA" |
             gzip -n > dist/llm-hud.tar.gz
           cp install.sh dist/install.sh
+          sed -i \
+            "s/^embedded_release_tag='__LLM_HUD_RELEASE_TAG__'$/embedded_release_tag='$GITHUB_REF_NAME'/" \
+            dist/install.sh
+          grep -Fqx "embedded_release_tag='$GITHUB_REF_NAME'" dist/install.sh
           cd dist
           sha256sum llm-hud.tar.gz install.sh > SHA256SUMS
           sha256sum --check SHA256SUMS

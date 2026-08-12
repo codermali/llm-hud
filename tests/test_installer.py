@@ -16,6 +16,7 @@ from llm_hud.runtime import read_activation, validate_runtime
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "install.sh"
+RELEASE_TAG_PLACEHOLDER = "__LLM_HUD_RELEASE_TAG__"
 MARKER = ".llm-hud-install-root"
 LAYOUT = ".llm-hud-layout"
 
@@ -107,6 +108,27 @@ def run_installer(
 
 
 class InstallerRootSafetyTests(unittest.TestCase):
+    def test_release_installer_pins_all_downloads_to_its_embedded_tag(self):
+        script = INSTALLER.read_text()
+        release_script = script.replace(
+            f"embedded_release_tag='{RELEASE_TAG_PLACEHOLDER}'",
+            "embedded_release_tag='v9.8.7'",
+        )
+
+        self.assertIn("embedded_release_tag='v9.8.7'", release_script)
+        self.assertIn(
+            'releases/download/$embedded_release_tag',
+            release_script,
+        )
+        self.assertIn(
+            "[ \"$embedded_release_tag\" = '__LLM_HUD_RELEASE_TAG__' ] || return 0",
+            script,
+        )
+        self.assertNotIn(
+            f"embedded_release_tag='{RELEASE_TAG_PLACEHOLDER}'",
+            release_script,
+        )
+
     def test_python_3_9_can_verify_and_install_a_release_archive(self):
         python = find_exact_python(3, 9)
         if python is None:

@@ -6,7 +6,12 @@
 #
 set -eu
 
-default_release_base=https://github.com/codermali/llm-hud/releases/latest/download
+embedded_release_tag='__LLM_HUD_RELEASE_TAG__'
+if [ "$embedded_release_tag" = '__LLM_HUD_RELEASE_TAG__' ]; then
+  default_release_base=https://github.com/codermali/llm-hud/releases/latest/download
+else
+  default_release_base="https://github.com/codermali/llm-hud/releases/download/$embedded_release_tag"
+fi
 default_repo_tarball=$default_release_base/llm-hud.tar.gz
 default_repo_checksum=$default_release_base/SHA256SUMS
 if [ "${LLM_HUD_TARBALL_URL+x}" = x ]; then
@@ -81,6 +86,9 @@ download_file() {
 # tag once and pin both downloads to it, so an install that races a release
 # publication cannot pair a new tarball with an old checksum file.
 pin_release_assets() {
+  # A release-attached installer has its own tag embedded by release.yml. Keep
+  # all three assets on that tag instead of resolving `latest` a second time.
+  [ "$embedded_release_tag" = '__LLM_HUD_RELEASE_TAG__' ] || return 0
   command -v curl >/dev/null 2>&1 || return 0
   release_url=$(
     curl -fsSL --connect-timeout 15 --max-time 60 -o /dev/null \
