@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from llm_hud.paths import provider_journal_path, provider_state_path
+from llm_hud.storage import ProviderLock
 
 
 RESULT_STATUSES = frozenset(
@@ -61,8 +62,9 @@ class Provider:
         """Abandon saved installation state without touching provider config."""
         path = provider_state_path(self.id)
         try:
-            provider_journal_path(self.id).unlink(missing_ok=True)
-            path.unlink()
+            with ProviderLock(path):
+                provider_journal_path(self.id).unlink(missing_ok=True)
+                path.unlink()
         except FileNotFoundError:
             return Result(self.id, "skipped", "no installation state")
         except OSError as error:

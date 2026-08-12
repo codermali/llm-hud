@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import llm_hud.providers.codex as codex_module
 from llm_hud.providers.codex import CodexProvider, HUD_ITEMS
 from llm_hud.toml_edit import set_array
 from tests.support import Environment
@@ -263,6 +264,73 @@ class CodexProviderTests(unittest.TestCase):
                 self.assertEqual(result.status, "conflict")
                 self.assertIn("--forget", result.message)
                 self.assertEqual(status_line(config), changed)
+
+    def test_install_does_not_overwrite_a_concurrent_config_edit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            original = 'model = "gpt-5"\n'
+            external = 'model = "gpt-5.5"\nexternal_edit = true\n'
+            config.write_text(original)
+            providers_dir = root / "state" / "providers"
+            state_path = providers_dir / "codex.json"
+            original_write = codex_module.atomic_write_provider_state
+
+            def write_state(path, payload):
+                original_write(path, payload)
+                if path == state_path:
+                    config.write_text(external)
+
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                with mock.patch(
+                    "llm_hud.providers.codex.atomic_write_provider_state",
+                    side_effect=write_state,
+                ):
+                    result = CodexProvider().install("ignored")
+
+            self.assertEqual(result.status, "conflict")
+            self.assertIn("retry", result.message)
+            self.assertEqual(config.read_text(), external)
+            self.assertFalse(state_path.exists())
+            self.assertFalse((providers_dir / "codex.journal.json").exists())
+
+    def test_uninstall_does_not_overwrite_a_concurrent_config_edit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            config.write_text('model = "gpt-5"\n')
+            providers_dir = root / "state" / "providers"
+            journal_path = providers_dir / "codex.journal.json"
+            original_write = codex_module.atomic_write_provider_state
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = CodexProvider()
+                self.assertEqual(provider.install("ignored").status, "installed")
+
+                def write_journal(path, payload):
+                    original_write(path, payload)
+                    if path == journal_path:
+                        config.write_text(
+                            f'external_edit = true\n{config.read_text()}'
+                        )
+
+                with mock.patch(
+                    "llm_hud.providers.codex.atomic_write_provider_state",
+                    side_effect=write_journal,
+                ):
+                    result = provider.uninstall()
+
+            parsed = tomllib.loads(config.read_text())
+            self.assertEqual(result.status, "conflict")
+            self.assertTrue(parsed["external_edit"])
+            self.assertEqual(parsed["tui"]["status_line"], HUD_ITEMS)
+            self.assertTrue((providers_dir / "codex.json").exists())
+            self.assertFalse(journal_path.exists())
 
     def test_future_state_schema_blocks_install_without_touching_config(self):
         with tempfile.TemporaryDirectory() as directory:

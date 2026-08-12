@@ -8,6 +8,8 @@ from pathlib import Path
 from unittest import mock
 
 from llm_hud.storage import (
+    ContentChangedError,
+    ProviderLock,
     StateFileError,
     atomic_write_json,
     atomic_write_text,
@@ -115,6 +117,34 @@ class AtomicWriteTests(unittest.TestCase):
             self.assertEqual(first.read_text(), "first")
             self.assertEqual(second.read_text(), "second")
 
+    def test_expected_content_rejects_a_concurrent_edit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            path.write_text('{"theme":"light"}\n')
+            snapshot = path.read_bytes()
+            path.write_text('{"theme":"dark","external":true}\n')
+
+            with self.assertRaisesRegex(ContentChangedError, "changed"):
+                atomic_write_text(
+                    path,
+                    '{"managed":true}\n',
+                    expected_content=snapshot,
+                )
+
+            self.assertEqual(
+                path.read_text(), '{"theme":"dark","external":true}\n'
+            )
+
+    def test_expected_absence_rejects_a_concurrently_created_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            path.write_text('{"external":true}\n')
+
+            with self.assertRaisesRegex(ContentChangedError, "changed"):
+                atomic_write_text(path, '{"managed":true}\n', expected_content=None)
+
+            self.assertEqual(path.read_text(), '{"external":true}\n')
+
     def test_non_regular_target_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -185,6 +215,28 @@ class ProviderStateTests(unittest.TestCase):
 
             self.assertTrue(state.is_symlink())
             self.assertEqual(external.read_text(), '{"schema": 1}\n')
+
+
+class ProviderLockTests(unittest.TestCase):
+    def test_second_provider_operation_cannot_enter_the_transaction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "providers" / "claude.json"
+            with ProviderLock(state):
+                with self.assertRaisesRegex(OSError, "operation is in progress"):
+                    with ProviderLock(state, timeout=0):
+                        self.fail("second provider lock must not be acquired")
+
+    def test_provider_lock_refuses_a_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            providers = Path(directory) / "providers"
+            providers.mkdir()
+            target = providers / "external"
+            target.write_text("")
+            (providers / "claude.lock").symlink_to(target.name)
+
+            with self.assertRaisesRegex(OSError, "provider lock"):
+                with ProviderLock(providers / "claude.json", timeout=0):
+                    self.fail("symlink lock must not be acquired")
 
 
 if __name__ == "__main__":

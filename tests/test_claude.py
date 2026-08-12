@@ -277,6 +277,73 @@ class ClaudeProviderTests(unittest.TestCase):
                     "my-new-footer",
                 )
 
+    def test_install_does_not_overwrite_a_concurrent_settings_edit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "settings.json"
+            settings.write_text('{"theme":"light"}\n')
+            providers_dir = root / "state" / "providers"
+            state_path = providers_dir / "claude.json"
+            external = {"theme": "dark", "external_edit": True}
+            original_write = claude_module.atomic_write_provider_state
+
+            def write_state(path, payload):
+                original_write(path, payload)
+                if path == state_path:
+                    settings.write_text(json.dumps(external))
+
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                with mock.patch(
+                    "llm_hud.providers.claude.atomic_write_provider_state",
+                    side_effect=write_state,
+                ):
+                    result = ClaudeProvider().install("/opt/llm-hud")
+
+            self.assertEqual(result.status, "conflict")
+            self.assertIn("retry", result.message)
+            self.assertEqual(json.loads(settings.read_text()), external)
+            self.assertFalse(state_path.exists())
+            self.assertFalse((providers_dir / "claude.journal.json").exists())
+
+    def test_uninstall_does_not_overwrite_a_concurrent_settings_edit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "settings.json"
+            providers_dir = root / "state" / "providers"
+            journal_path = providers_dir / "claude.journal.json"
+            original_write = claude_module.atomic_write_provider_state
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = ClaudeProvider()
+                self.assertEqual(
+                    provider.install("/opt/llm-hud").status, "installed"
+                )
+
+                def write_journal(path, payload):
+                    original_write(path, payload)
+                    if path == journal_path:
+                        concurrent = json.loads(settings.read_text())
+                        concurrent["external_edit"] = True
+                        settings.write_text(json.dumps(concurrent))
+
+                with mock.patch(
+                    "llm_hud.providers.claude.atomic_write_provider_state",
+                    side_effect=write_journal,
+                ):
+                    result = provider.uninstall()
+
+            current = json.loads(settings.read_text())
+            self.assertEqual(result.status, "conflict")
+            self.assertTrue(current["external_edit"])
+            self.assertIn("statusLine", current)
+            self.assertTrue((providers_dir / "claude.json").exists())
+            self.assertFalse(journal_path.exists())
+
     def test_uninstall_does_not_replace_a_later_non_command_change(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

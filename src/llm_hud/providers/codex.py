@@ -11,11 +11,14 @@ from llm_hud.paths import (
 )
 from llm_hud.providers.base import Provider, ProviderCapabilities, Result
 from llm_hud.storage import (
+    ContentChangedError,
+    ProviderLock,
     StateFileError,
     atomic_write_provider_state,
     atomic_write_text,
     read_provider_journal,
     read_provider_state,
+    read_text_snapshot,
     resolve_file_target,
     restore_provider_state,
     validate_state_path,
@@ -51,14 +54,18 @@ def _matches_original(
     )
 
 
-def _load_config(*, target: Path | None = None) -> tuple[str, dict[str, Any]]:
+def _load_config_snapshot(
+    *, target: Path | None = None
+) -> tuple[str, dict[str, Any], bytes | None]:
     path = codex_config_path()
     target = target or resolve_file_target(path)
-    try:
-        text = target.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        text = ""
-    return text, tomllib.loads(text)
+    text, snapshot = read_text_snapshot(target)
+    return text, tomllib.loads(text), snapshot
+
+
+def _load_config(*, target: Path | None = None) -> tuple[str, dict[str, Any]]:
+    text, parsed, _ = _load_config_snapshot(target=target)
+    return text, parsed
 
 
 def _status_line(parsed: dict[str, Any]) -> tuple[bool, list[str]]:
@@ -144,13 +151,22 @@ class CodexProvider(Provider):
     )
 
     def install(self, command_path: str) -> Result:
+        try:
+            with ProviderLock(provider_state_path(self.id)):
+                return self._install_locked(command_path)
+        except OSError as error:
+            return Result(self.id, "error", str(error))
+
+    def _install_locked(self, command_path: str) -> Result:
         del command_path
         path = codex_config_path()
         state_path = provider_state_path(self.id)
         journal_path = provider_journal_path(self.id)
         try:
             config_target = resolve_file_target(path)
-            text, parsed = _load_config(target=config_target)
+            text, parsed, config_snapshot = _load_config_snapshot(
+                target=config_target
+            )
             current_present, current = _status_line(parsed)
         except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
             return Result(self.id, "error", f"cannot read {path}: {error}")
@@ -201,7 +217,12 @@ class CodexProvider(Provider):
             atomic_write_provider_state(journal_path, journal)
             atomic_write_provider_state(state_path, state)
             state_written = True
-            atomic_write_text(path, updated, expected_target=config_target)
+            atomic_write_text(
+                path,
+                updated,
+                expected_target=config_target,
+                expected_content=config_snapshot,
+            )
         except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
             try:
                 if state_written:
@@ -214,7 +235,8 @@ class CodexProvider(Provider):
                     f"{error}; also failed to restore installation state: "
                     f"{rollback_error}",
                 )
-            return Result(self.id, "error", str(error))
+            status = "conflict" if isinstance(error, ContentChangedError) else "error"
+            return Result(self.id, status, str(error))
         try:
             journal_path.unlink(missing_ok=True)
         except OSError:
@@ -222,12 +244,21 @@ class CodexProvider(Provider):
         return Result(self.id, "installed", f"configured {path}")
 
     def uninstall(self) -> Result:
+        try:
+            with ProviderLock(provider_state_path(self.id)):
+                return self._uninstall_locked()
+        except OSError as error:
+            return Result(self.id, "error", str(error))
+
+    def _uninstall_locked(self) -> Result:
         path = codex_config_path()
         state_path = provider_state_path(self.id)
         journal_path = provider_journal_path(self.id)
         try:
             config_target = resolve_file_target(path)
-            text, parsed = _load_config(target=config_target)
+            text, parsed, config_snapshot = _load_config_snapshot(
+                target=config_target
+            )
             present, current = _status_line(parsed)
         except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
             return Result(self.id, "error", f"cannot read {path}: {error}")
@@ -267,9 +298,25 @@ class CodexProvider(Provider):
             else:
                 updated = set_array(text, "tui", "status_line", restored)
             atomic_write_provider_state(journal_path, journal)
-            atomic_write_text(path, updated, expected_target=config_target)
+            atomic_write_text(
+                path,
+                updated,
+                expected_target=config_target,
+                expected_content=config_snapshot,
+            )
             state_path.unlink(missing_ok=True)
             journal_path.unlink(missing_ok=True)
+        except ContentChangedError as error:
+            try:
+                journal_path.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                return Result(
+                    self.id,
+                    "error",
+                    f"{error}; also failed to clear transaction journal: "
+                    f"{cleanup_error}",
+                )
+            return Result(self.id, "conflict", str(error))
         except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
             return Result(self.id, "error", str(error))
         return Result(self.id, "uninstalled", f"restored {path}")

@@ -4,14 +4,105 @@ import json
 import os
 import stat
 import tempfile
+import time
 from pathlib import Path
+from types import TracebackType
 from typing import Any
 
-from llm_hud._platform import set_descriptor_mode
+from llm_hud._platform import (
+    set_descriptor_mode,
+    try_lock_descriptor,
+    unlock_descriptor,
+)
 
 
 class StateFileError(ValueError):
     """An installation state file is present but unsafe to use."""
+
+
+class ContentChangedError(OSError):
+    """A file no longer contains the content an atomic update was based on."""
+
+
+_EXPECTED_CONTENT_UNSET = object()
+
+
+class ProviderLock:
+    """Serialize all state/config transactions for one provider.
+
+    The lock file lives beside the provider state.  Keeping this lock separate
+    from the provider configuration is important: editors commonly replace
+    configuration files, which would silently discard a lock held on the old
+    inode.
+    """
+
+    def __init__(self, state_path: Path, timeout: float = 10.0) -> None:
+        self.path = state_path.with_suffix(".lock")
+        self.timeout = timeout
+        self._descriptor: int | None = None
+
+    def __enter__(self) -> ProviderLock:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(self.path, flags, 0o600)
+        except OSError as error:
+            raise OSError(f"cannot open provider lock {self.path}: {error}") from error
+        try:
+            descriptor_metadata = os.fstat(descriptor)
+            path_metadata = self.path.lstat()
+        except OSError as error:
+            os.close(descriptor)
+            raise OSError(f"cannot verify provider lock {self.path}: {error}") from error
+        if (
+            not stat.S_ISREG(descriptor_metadata.st_mode)
+            or stat.S_ISLNK(path_metadata.st_mode)
+            or (descriptor_metadata.st_dev, descriptor_metadata.st_ino)
+            != (path_metadata.st_dev, path_metadata.st_ino)
+        ):
+            os.close(descriptor)
+            raise OSError(
+                f"provider lock is not a regular managed file: {self.path}"
+            )
+        try:
+            set_descriptor_mode(descriptor, 0o600)
+        except OSError as error:
+            os.close(descriptor)
+            raise OSError(
+                f"cannot secure provider lock {self.path}: {error}"
+            ) from error
+        deadline = time.monotonic() + max(0.0, self.timeout)
+        while True:
+            try:
+                try_lock_descriptor(descriptor)
+                self._descriptor = descriptor
+                return self
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    os.close(descriptor)
+                    raise OSError(
+                        f"another provider operation is in progress: {self.path}"
+                    )
+                time.sleep(0.05)
+            except OSError as error:
+                os.close(descriptor)
+                raise OSError(
+                    f"cannot lock provider operations {self.path}: {error}"
+                ) from error
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        del exc_type, exc_value, traceback
+        if self._descriptor is not None:
+            try:
+                unlock_descriptor(self._descriptor)
+            finally:
+                os.close(self._descriptor)
+                self._descriptor = None
 
 
 def fsync_directory(path: Path) -> None:
@@ -154,6 +245,21 @@ def validate_state_path(state: dict[str, Any], key: str, current: Path) -> Path:
     return current_path
 
 
+def read_text_snapshot(path: Path) -> tuple[str, bytes | None]:
+    """Read UTF-8 text together with the exact bytes used for a later CAS.
+
+    ``None`` distinguishes an absent file from an existing empty file.  The
+    caller should pass the byte snapshot back to ``atomic_write_*`` so an
+    editor that changes the file during a provider transaction is detected
+    instead of overwritten.
+    """
+    try:
+        content = path.read_bytes()
+    except FileNotFoundError:
+        return "", None
+    return content.decode("utf-8"), content
+
+
 def atomic_write_text(
     path: Path,
     content: str,
@@ -161,6 +267,7 @@ def atomic_write_text(
     *,
     follow_symlinks: bool = True,
     expected_target: Path | None = None,
+    expected_content: bytes | None | object = _EXPECTED_CONTENT_UNSET,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     target = resolve_file_target(path, follow_symlinks=follow_symlinks)
@@ -197,6 +304,31 @@ def atomic_write_text(
             set_descriptor_mode(handle.fileno(), target_mode)
             handle.flush()
             os.fsync(handle.fileno())
+        if expected_content is not _EXPECTED_CONTENT_UNSET:
+            if expected_content is not None and not isinstance(
+                expected_content, bytes
+            ):
+                raise TypeError("expected_content must be bytes or None")
+            # Resolve again as late as possible.  This catches a symlink being
+            # retargeted after the provider took its snapshot, while the byte
+            # comparison catches in-place writes and atomic editor renames.
+            final_target = resolve_file_target(
+                path, follow_symlinks=follow_symlinks
+            )
+            if final_target != target:
+                raise ContentChangedError(
+                    f"configuration target changed while updating {path}; "
+                    "left it untouched; retry the command"
+                )
+            try:
+                current_content = final_target.read_bytes()
+            except FileNotFoundError:
+                current_content = None
+            if current_content != expected_content:
+                raise ContentChangedError(
+                    f"configuration changed while updating {path}; "
+                    "left it untouched; retry the command"
+                )
         if not follow_symlinks:
             try:
                 final_metadata = target.lstat()
@@ -222,6 +354,7 @@ def atomic_write_json(
     *,
     follow_symlinks: bool = True,
     expected_target: Path | None = None,
+    expected_content: bytes | None | object = _EXPECTED_CONTENT_UNSET,
 ) -> None:
     """Write JSON atomically; mode=None keeps the file's existing permissions."""
     atomic_write_text(
@@ -230,6 +363,7 @@ def atomic_write_json(
         mode=mode,
         follow_symlinks=follow_symlinks,
         expected_target=expected_target,
+        expected_content=expected_content,
     )
 
 

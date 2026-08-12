@@ -16,11 +16,14 @@ from llm_hud.paths import (
 )
 from llm_hud.providers.base import Provider, ProviderCapabilities, Result
 from llm_hud.storage import (
+    ContentChangedError,
+    ProviderLock,
     StateFileError,
     atomic_write_json,
     atomic_write_provider_state,
     read_provider_journal,
     read_provider_state,
+    read_text_snapshot,
     resolve_file_target,
     restore_provider_state,
     validate_state_path,
@@ -129,15 +132,22 @@ def _launcher_problem(command: object) -> str | None:
     return None
 
 
-def _load_settings(path: Path, *, target: Path | None = None) -> dict[str, Any]:
+def _load_settings_snapshot(
+    path: Path, *, target: Path | None = None
+) -> tuple[dict[str, Any], bytes | None]:
     target = target or resolve_file_target(path)
-    if not target.exists():
-        return {}
-    with target.open("r", encoding="utf-8") as handle:
-        payload = json.load(handle)
+    text, snapshot = read_text_snapshot(target)
+    if snapshot is None:
+        return {}, None
+    payload = json.loads(text)
     if not isinstance(payload, dict):
         raise ValueError(f"Claude settings must be a JSON object: {path}")
-    return payload
+    return payload, snapshot
+
+
+def _load_settings(path: Path, *, target: Path | None = None) -> dict[str, Any]:
+    settings, _ = _load_settings_snapshot(path, target=target)
+    return settings
 
 
 def _configured_status_line(
@@ -328,12 +338,21 @@ class ClaudeProvider(Provider):
     )
 
     def install(self, command_path: str) -> Result:
+        try:
+            with ProviderLock(provider_state_path(self.id)):
+                return self._install_locked(command_path)
+        except OSError as error:
+            return Result(self.id, "error", str(error))
+
+    def _install_locked(self, command_path: str) -> Result:
         settings_path = claude_settings_path()
         state_path = provider_state_path(self.id)
         journal_path = provider_journal_path(self.id)
         try:
             settings_target = resolve_file_target(settings_path)
-            settings = _load_settings(settings_path, target=settings_target)
+            settings, settings_snapshot = _load_settings_snapshot(
+                settings_path, target=settings_target
+            )
         except (OSError, json.JSONDecodeError, ValueError) as error:
             return Result(self.id, "error", str(error))
 
@@ -397,6 +416,7 @@ class ClaudeProvider(Provider):
                 settings,
                 mode=None,
                 expected_target=settings_target,
+                expected_content=settings_snapshot,
             )
         except OSError as error:
             try:
@@ -410,7 +430,8 @@ class ClaudeProvider(Provider):
                     f"{error}; also failed to restore installation state: "
                     f"{rollback_error}",
                 )
-            return Result(self.id, "error", str(error))
+            status = "conflict" if isinstance(error, ContentChangedError) else "error"
+            return Result(self.id, status, str(error))
         try:
             journal_path.unlink(missing_ok=True)
         except OSError:
@@ -418,12 +439,21 @@ class ClaudeProvider(Provider):
         return Result(self.id, "installed", f"configured {settings_path}")
 
     def uninstall(self) -> Result:
+        try:
+            with ProviderLock(provider_state_path(self.id)):
+                return self._uninstall_locked()
+        except OSError as error:
+            return Result(self.id, "error", str(error))
+
+    def _uninstall_locked(self) -> Result:
         settings_path = claude_settings_path()
         state_path = provider_state_path(self.id)
         journal_path = provider_journal_path(self.id)
         try:
             settings_target = resolve_file_target(settings_path)
-            settings = _load_settings(settings_path, target=settings_target)
+            settings, settings_snapshot = _load_settings_snapshot(
+                settings_path, target=settings_target
+            )
         except (OSError, json.JSONDecodeError, ValueError) as error:
             return Result(self.id, "error", str(error))
         try:
@@ -469,9 +499,21 @@ class ClaudeProvider(Provider):
                 settings,
                 mode=None,
                 expected_target=settings_target,
+                expected_content=settings_snapshot,
             )
             state_path.unlink(missing_ok=True)
             journal_path.unlink(missing_ok=True)
+        except ContentChangedError as error:
+            try:
+                journal_path.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                return Result(
+                    self.id,
+                    "error",
+                    f"{error}; also failed to clear transaction journal: "
+                    f"{cleanup_error}",
+                )
+            return Result(self.id, "conflict", str(error))
         except OSError as error:
             return Result(self.id, "error", str(error))
         return Result(self.id, "uninstalled", f"restored {settings_path}")
