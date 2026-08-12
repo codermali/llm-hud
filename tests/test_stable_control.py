@@ -27,6 +27,8 @@ from llm_hud.runtime import (
 ROOT = Path(__file__).resolve().parents[1]
 DISPATCHER_SOURCE = ROOT / "scripts" / "llm-hud-dispatcher"
 CONTROL_SOURCE = ROOT / "scripts" / "runtime_control.py"
+PREVIOUS_RUNTIME_FIXTURE = ROOT / "tests" / "fixtures" / "runtime_v0_2_0"
+PREVIOUS_RUNTIME_RELEASE = "0.2.0-f7d14db3ff86"
 
 
 def install_stable_control(root: Path) -> Path:
@@ -102,6 +104,27 @@ def load_installed_control(root: Path):
 
 
 class StableDispatcherTests(unittest.TestCase):
+    def test_current_control_dispatches_and_rolls_back_to_v0_2_0_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            dispatcher = install_stable_control(root)
+            shutil.copytree(
+                PREVIOUS_RUNTIME_FIXTURE,
+                root / "versions" / PREVIOUS_RUNTIME_RELEASE,
+            )
+            current = create_runtime(root, "current", "0.3.0")
+            activate(root, PREVIOUS_RUNTIME_RELEASE)
+            activate(root, current)
+
+            rolled_back = run_dispatcher(dispatcher, "rollback")
+
+            self.assertEqual(rolled_back.returncode, 0, rolled_back.stderr)
+            self.assertEqual(read_activation(root).active, PREVIOUS_RUNTIME_RELEASE)
+            dispatched = run_dispatcher(dispatcher, "--version")
+            self.assertEqual(dispatched.returncode, 0, dispatched.stderr)
+            self.assertEqual(dispatched.stdout.strip(), "llm-hud 0.2.0")
+
     def test_dispatches_arguments_from_a_path_with_spaces_and_quotes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "install space's"

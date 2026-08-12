@@ -1,0 +1,2 @@
+#!/usr/bin/env python3
+raise SystemExit("the stable control must dispatch src/llm_hud/cli.py")

@@ -1,0 +1,3 @@
+[project]
+name = "llm-hud-runtime-abi-fixture"
+version = "0.2.0"

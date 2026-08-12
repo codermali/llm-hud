@@ -20,8 +20,9 @@ from llm_hud.storage import JOURNAL_SCHEMAS
 from tests.support import Environment
 
 
-# Schemas written by the previous release (0.1.0) and by the current tree.
-PREVIOUS_RELEASE_WRITES = {"claude": 1, "codex": 1}
+# Schemas written by the previous release (v0.2.0) and by the current tree.
+# Advance this pin after every release so the next release keeps its N-1 promise.
+PREVIOUS_RELEASE_WRITES = {"claude": 2, "codex": 1}
 CURRENT_WRITES = {"claude": 2, "codex": 1}
 
 
