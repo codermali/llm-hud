@@ -365,6 +365,158 @@ class RuntimeInstallerTests(unittest.TestCase):
             )
             self.assertEqual(pointer["launcher_path"], str(launcher.resolve()))
 
+    def test_first_install_removes_its_launcher_when_pointer_write_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "runtime"
+            launcher = base / "bin" / "llm-hud"
+            root.mkdir()
+            owned_root(root)
+            write_pointer = installer_module._write_launcher_state
+
+            def write_pointer_then_fail(*args, **kwargs):
+                write_pointer(*args, **kwargs)
+                raise OSError("simulated pointer durability failure")
+
+            with mock.patch(
+                "llm_hud.installer._write_launcher_state",
+                side_effect=write_pointer_then_fail,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeLayoutError,
+                    "simulated pointer durability failure",
+                ):
+                    install_complete(ROOT, root, launcher, Path(sys.executable))
+
+            self.assertFalse(launcher.exists())
+            self.assertFalse((root / ".llm-hud-launcher-state.json").exists())
+            self.assertFalse((root / "activation").exists())
+
+    def test_pointer_failure_restores_previous_launcher_and_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "runtime"
+            launcher = base / "bin" / "llm-hud"
+            root.mkdir()
+            owned_root(root)
+            _, activation = install_complete(
+                ROOT,
+                root,
+                launcher,
+                Path(sys.executable),
+            )
+            state_path = root / ".llm-hud-launcher-state.json"
+            state_path.write_bytes(b'{"schema": 1, "launcher_path": "/old"}\n')
+            state_path.chmod(0o640)
+            launcher_before = launcher.read_bytes()
+            launcher_mode_before = launcher.stat().st_mode & 0o777
+            state_before = state_path.read_bytes()
+            state_mode_before = state_path.stat().st_mode & 0o777
+            write_pointer = installer_module._write_launcher_state
+
+            def write_pointer_then_fail(*args, **kwargs):
+                write_pointer(*args, **kwargs)
+                raise OSError("simulated durability failure")
+
+            with mock.patch(
+                "llm_hud.installer._write_launcher_state",
+                side_effect=write_pointer_then_fail,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeLayoutError,
+                    "simulated durability failure",
+                ):
+                    installer_module.install_external_launcher(
+                        root,
+                        launcher,
+                        base / "replacement-python",
+                        expected_active=activation.active,
+                    )
+
+            self.assertEqual(launcher.read_bytes(), launcher_before)
+            self.assertEqual(launcher.stat().st_mode & 0o777, launcher_mode_before)
+            self.assertEqual(state_path.read_bytes(), state_before)
+            self.assertEqual(state_path.stat().st_mode & 0o777, state_mode_before)
+
+    def test_launcher_rollback_never_overwrites_a_foreign_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "runtime"
+            launcher = base / "bin" / "llm-hud"
+            root.mkdir()
+            owned_root(root)
+            _, activation = install_complete(
+                ROOT,
+                root,
+                launcher,
+                Path(sys.executable),
+            )
+            state_path = root / ".llm-hud-launcher-state.json"
+            state_path.write_text('{"schema": 1, "launcher_path": "/old"}\n')
+            foreign = b"foreign concurrent launcher\n"
+
+            def replace_launcher_then_fail(*_args, **_kwargs):
+                replacement = launcher.with_name("foreign-launcher")
+                replacement.write_bytes(foreign)
+                os.replace(replacement, launcher)
+                raise OSError("simulated pointer failure")
+
+            with mock.patch(
+                "llm_hud.installer._write_launcher_state",
+                side_effect=replace_launcher_then_fail,
+            ):
+                with self.assertRaisesRegex(RuntimeLayoutError, "rollback incomplete"):
+                    installer_module.install_external_launcher(
+                        root,
+                        launcher,
+                        base / "replacement-python",
+                        expected_active=activation.active,
+                    )
+
+            self.assertEqual(launcher.read_bytes(), foreign)
+
+    def test_launcher_rollback_never_overwrites_a_foreign_pointer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "runtime"
+            launcher = base / "bin" / "llm-hud"
+            root.mkdir()
+            owned_root(root)
+            _, activation = install_complete(
+                ROOT,
+                root,
+                launcher,
+                Path(sys.executable),
+            )
+            launcher_before = launcher.read_bytes()
+            state_path = root / ".llm-hud-launcher-state.json"
+            state_path.write_text('{"schema": 1, "launcher_path": "/old"}\n')
+            foreign = b'{"schema": 1, "launcher_path": "/foreign"}\n'
+
+            write_pointer = installer_module._write_launcher_state
+
+            def replace_pointer_then_fail(*args, **kwargs):
+                write_pointer(*args, **kwargs)
+                replacement = state_path.with_name("foreign-pointer")
+                replacement.write_bytes(foreign)
+                os.replace(replacement, state_path)
+                raise OSError("simulated pointer failure")
+
+            with mock.patch(
+                "llm_hud.installer._write_launcher_state",
+                side_effect=replace_pointer_then_fail,
+            ):
+                with self.assertRaisesRegex(RuntimeLayoutError, "rollback incomplete"):
+                    installer_module.install_external_launcher(
+                        root,
+                        launcher,
+                        base / "replacement-python",
+                        expected_active=activation.active,
+                    )
+
+            self.assertEqual(state_path.read_bytes(), foreign)
+            self.assertEqual(launcher.read_bytes(), launcher_before)
+
     def test_foreign_external_launcher_types_are_never_replaced(self):
         for kind in ("file", "directory", "symlink", "hardlink"):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
