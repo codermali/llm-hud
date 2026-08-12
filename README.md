@@ -83,8 +83,8 @@ curl -fsSL https://github.com/codermali/llm-hud/releases/latest/download/install
 - 只配置已检测到且需要配置的工具；
 - 将恢复配置所需的状态保存到 `~/.config/llm-hud`。
 
-Python 的检测顺序为 `python3.13`、`python3.12`、`python3.11`、`python3.10`、
-`python3.9`、`python3`、`python`（最后一项主要用于 Windows）。
+Python 的检测顺序为 `python3.14`、`python3.13`、`python3.12`、`python3.11`、
+`python3.10`、`python3.9`、`python3`、`python`（最后一项主要用于 Windows）。
 如需指定解释器：
 
 ```bash

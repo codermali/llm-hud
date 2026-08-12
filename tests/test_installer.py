@@ -108,6 +108,13 @@ def run_installer(
 
 
 class InstallerRootSafetyTests(unittest.TestCase):
+    def test_python_detection_prefers_3_14_and_keeps_supported_fallbacks(self):
+        self.assertIn(
+            "for candidate in python3.14 python3.13 python3.12 python3.11 "
+            "python3.10 python3.9 python3 python; do",
+            INSTALLER.read_text(),
+        )
+
     def test_release_installer_pins_all_downloads_to_its_embedded_tag(self):
         script = INSTALLER.read_text()
         release_script = script.replace(

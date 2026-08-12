@@ -36,10 +36,14 @@ class VersionMetadataTests(unittest.TestCase):
         )
 
     def test_build_metadata_supports_python_3_9_and_newer(self):
-        pyproject = (ROOT / "pyproject.toml").read_text()
-        self.assertIn('requires-python = ">=3.9"', pyproject)
-        self.assertIn('"Programming Language :: Python :: 3.9"', pyproject)
-        self.assertIn('"Programming Language :: Python :: 3.10"', pyproject)
+        metadata = tomllib.loads((ROOT / "pyproject.toml").read_text())
+        project = metadata["project"]
+        self.assertEqual(project["requires-python"], ">=3.9")
+        for minor in range(9, 15):
+            self.assertIn(
+                f"Programming Language :: Python :: 3.{minor}",
+                project["classifiers"],
+            )
 
 
 if __name__ == "__main__":
