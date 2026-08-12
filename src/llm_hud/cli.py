@@ -91,10 +91,6 @@ def command_uninstall(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
-def _version(command: str) -> str:
-    return _probe_version(command)[0]
-
-
 def _probe_version(command: str) -> tuple[str, bool, str | None]:
     """Return the version, whether the CLI answered, and a failure detail."""
     try:
@@ -103,6 +99,8 @@ def _probe_version(command: str) -> tuple[str, bool, str | None]:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=3,
             check=False,
         )
@@ -136,7 +134,9 @@ def command_doctor(_: argparse.Namespace) -> int:
             if probe_error:
                 installed = f"{installed} ({probe_error})"
         print(f"{provider.id}: {installed}; {state}; {detail}")
-        if available and (not configured or not executable_healthy):
+        if configured and not available:
+            healthy = False
+        elif available and (not configured or not executable_healthy):
             healthy = False
     return 0 if healthy else 1
 

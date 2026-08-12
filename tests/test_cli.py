@@ -10,7 +10,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from llm_hud.cli import _version, build_parser, command_doctor
+from llm_hud.cli import _probe_version, build_parser, command_doctor
+from llm_hud.providers.codex import HUD_ITEMS
 from llm_hud.providers.claude import ClaudeProvider
 from tests.support import Environment
 
@@ -26,20 +27,20 @@ class VersionTests(unittest.TestCase):
     def test_reads_version_from_stdout(self):
         with tempfile.TemporaryDirectory() as directory:
             path = stub_executable(Path(directory), "agent", "echo 'agent 1.2.3'")
-            self.assertEqual(_version(str(path)), "agent 1.2.3")
+            self.assertEqual(_probe_version(str(path))[0], "agent 1.2.3")
 
     def test_falls_back_to_stderr(self):
         with tempfile.TemporaryDirectory() as directory:
             path = stub_executable(Path(directory), "agent", "echo 'agent 9.9' >&2")
-            self.assertEqual(_version(str(path)), "agent 9.9")
+            self.assertEqual(_probe_version(str(path))[0], "agent 9.9")
 
     def test_keeps_only_the_first_line(self):
         with tempfile.TemporaryDirectory() as directory:
             path = stub_executable(Path(directory), "agent", "printf 'v1\\nextra\\n'")
-            self.assertEqual(_version(str(path)), "v1")
+            self.assertEqual(_probe_version(str(path))[0], "v1")
 
     def test_missing_command_is_unknown(self):
-        self.assertEqual(_version("/nonexistent/agent-cli"), "unknown")
+        self.assertEqual(_probe_version("/nonexistent/agent-cli")[0], "unknown")
 
     def test_nonzero_version_command_is_reported_as_failed(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -47,14 +48,24 @@ class VersionTests(unittest.TestCase):
                 Path(directory), "agent", "echo 'broken version' >&2; exit 7"
             )
             self.assertEqual(
-                _version(str(path)),
+                _probe_version(str(path))[0],
                 "broken version",
             )
 
     def test_empty_successful_version_command_remains_unknown(self):
         with tempfile.TemporaryDirectory() as directory:
             path = stub_executable(Path(directory), "agent", "exit 0")
-            self.assertEqual(_version(str(path)), "unknown")
+            self.assertEqual(_probe_version(str(path))[0], "unknown")
+
+    def test_non_utf8_version_output_is_replaced_instead_of_crashing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = stub_executable(Path(directory), "agent", "printf '\\377\\n'")
+
+            version, healthy, detail = _probe_version(str(path))
+
+        self.assertEqual(version, "\ufffd")
+        self.assertTrue(healthy)
+        self.assertIsNone(detail)
 
 
 class InstallCommandTests(unittest.TestCase):
@@ -154,6 +165,49 @@ class UninstallCommandTests(unittest.TestCase):
 
 
 class DoctorCommandTests(unittest.TestCase):
+    def test_configured_provider_with_missing_cli_is_unhealthy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            config.write_text(
+                f"[tui]\nstatus_line = {json.dumps(HUD_ITEMS)}\n",
+                encoding="utf-8",
+            )
+            with Environment(
+                LLM_HUD_CLAUDE_BIN="",
+                LLM_HUD_CODEX_BIN="",
+                LLM_HUD_KIMI_BIN="",
+                LLM_HUD_CLAUDE_SETTINGS=str(root / "settings.json"),
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                buffer = io.StringIO()
+                with contextlib.redirect_stdout(buffer):
+                    result = command_doctor(None)  # type: ignore[arg-type]
+
+        self.assertEqual(result, 1)
+        self.assertIn("codex: not installed; configured", buffer.getvalue())
+
+    def test_missing_unconfigured_providers_do_not_make_doctor_unhealthy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with Environment(
+                LLM_HUD_CLAUDE_BIN="",
+                LLM_HUD_CODEX_BIN="",
+                LLM_HUD_KIMI_BIN="",
+                LLM_HUD_CLAUDE_SETTINGS=str(root / "settings.json"),
+                LLM_HUD_CODEX_CONFIG=str(root / "config.toml"),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                buffer = io.StringIO()
+                with contextlib.redirect_stdout(buffer):
+                    result = command_doctor(None)  # type: ignore[arg-type]
+
+        self.assertEqual(result, 0)
+        self.assertIn("claude: not installed; not configured", buffer.getvalue())
+        self.assertIn("codex: not installed; not configured", buffer.getvalue())
+        self.assertIn("kimi: not installed; not available", buffer.getvalue())
+
     def test_empty_successful_version_probe_is_unhealthy(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
