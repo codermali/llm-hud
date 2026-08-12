@@ -490,7 +490,11 @@ def _read_source_file(path: Path) -> tuple[bytes, bool]:
 
 
 def _fsync_regular_file(path: Path) -> None:
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    # Windows rejects fsync() on a read-only CRT descriptor. Staged runtime
+    # files are private copies owned by the installer, so open them read/write
+    # there while retaining the narrower POSIX access mode.
+    access = os.O_RDWR if os.name == "nt" else os.O_RDONLY
+    flags = access | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
     except OSError as error:
