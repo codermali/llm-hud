@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -857,7 +858,7 @@ class RuntimeInstallerTests(unittest.TestCase):
             owned_root(root)
 
             with mock.patch(
-                "llm_hud.installer.install_stable_tools",
+                "llm_hud.installer._install_stable_tools_unlocked",
                 side_effect=RuntimeLayoutError("simulated stable tools failure"),
             ):
                 with self.assertRaisesRegex(RuntimeLayoutError, "simulated"):
@@ -877,7 +878,7 @@ class RuntimeInstallerTests(unittest.TestCase):
             activation_before = (root / "activation").read_bytes()
 
             with mock.patch(
-                "llm_hud.installer.install_stable_tools",
+                "llm_hud.installer._install_stable_tools_unlocked",
                 side_effect=RuntimeLayoutError("simulated stable tools failure"),
             ):
                 with self.assertRaisesRegex(RuntimeLayoutError, "simulated"):
@@ -1225,6 +1226,86 @@ class RuntimeInstallerTests(unittest.TestCase):
             )
             self.assertEqual(running.returncode, 0, running.stderr)
 
+    def test_post_activation_failure_holds_the_lock_against_an_aba_update(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "runtime"
+            second_source = base / "second-source"
+            foreign_source = base / "foreign-source"
+            launcher = base / "bin" / "llm-hud"
+            root.mkdir()
+            second_source.mkdir()
+            foreign_source.mkdir()
+            owned_root(root)
+            first, _ = install_complete(
+                ROOT,
+                root,
+                launcher,
+                Path(sys.executable),
+            )
+            copy_runtime_checkout(second_source)
+            shutil.copytree(ROOT / "scripts", second_source / "scripts")
+            (second_source / "README.md").write_text("second release\n")
+            copy_runtime_checkout(foreign_source)
+            (foreign_source / "README.md").write_text("foreign release\n")
+            foreign, _ = install_runtime_from_source(foreign_source, root)
+            activate(root, first.release_id, expected_active=foreign.release_id)
+            candidate = installer_module.source_digest(second_source)
+            candidate_release = f"{__version__}-{candidate[:12]}"
+            entered_smoke = threading.Event()
+            attempted_aba = threading.Event()
+            aba_errors: list[Exception] = []
+
+            def try_aba_update() -> None:
+                entered_smoke.wait(timeout=15)
+                try:
+                    activate(
+                        root,
+                        foreign.release_id,
+                        expected_active=candidate_release,
+                        lock_timeout=0,
+                    )
+                    activate(
+                        root,
+                        candidate_release,
+                        expected_active=foreign.release_id,
+                        lock_timeout=0,
+                    )
+                except Exception as error:
+                    aba_errors.append(error)
+                finally:
+                    attempted_aba.set()
+
+            def fail_after_aba_attempt(*_args, **_kwargs) -> None:
+                entered_smoke.set()
+                self.assertTrue(attempted_aba.wait(timeout=15))
+                raise RuntimeLayoutError("simulated post-activation failure")
+
+            worker = threading.Thread(target=try_aba_update)
+            worker.start()
+            try:
+                with mock.patch(
+                    "llm_hud.installer._smoke_test_dispatcher",
+                    side_effect=fail_after_aba_attempt,
+                ):
+                    with self.assertRaisesRegex(RuntimeLayoutError, "simulated"):
+                        install_complete(
+                            second_source,
+                            root,
+                            launcher,
+                            Path(sys.executable),
+                        )
+            finally:
+                worker.join(timeout=15)
+
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(len(aba_errors), 1)
+            self.assertRegex(str(aba_errors[0]), "in progress")
+            current = read_activation(root)
+            assert current is not None
+            self.assertEqual(current.active, first.release_id)
+            self.assertEqual(current.previous, foreign.release_id)
+
     def test_first_install_post_activation_failure_clears_activation(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -1249,6 +1330,54 @@ class RuntimeInstallerTests(unittest.TestCase):
             releases = list((root / "versions").iterdir())
             self.assertEqual(len(releases), 1)
             validate_runtime(root, releases[0].name)
+
+    def test_first_install_failure_holds_the_lock_until_activation_is_cleared(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "runtime"
+            launcher = base / "bin" / "llm-hud"
+            root.mkdir()
+            owned_root(root)
+            entered_smoke = threading.Event()
+            attempted_update = threading.Event()
+            update_errors: list[Exception] = []
+
+            def try_concurrent_update() -> None:
+                entered_smoke.wait(timeout=15)
+                try:
+                    with installer_module.RuntimeLock(root, timeout=0):
+                        self.fail("concurrent install must not enter the transaction")
+                except Exception as error:
+                    update_errors.append(error)
+                finally:
+                    attempted_update.set()
+
+            def fail_after_update_attempt(*_args, **_kwargs) -> None:
+                entered_smoke.set()
+                self.assertTrue(attempted_update.wait(timeout=15))
+                raise RuntimeLayoutError("simulated post-activation failure")
+
+            worker = threading.Thread(target=try_concurrent_update)
+            worker.start()
+            try:
+                with mock.patch(
+                    "llm_hud.installer._smoke_test_dispatcher",
+                    side_effect=fail_after_update_attempt,
+                ):
+                    with self.assertRaisesRegex(RuntimeLayoutError, "simulated"):
+                        install_complete(
+                            ROOT,
+                            root,
+                            launcher,
+                            Path(sys.executable),
+                        )
+            finally:
+                worker.join(timeout=15)
+
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(len(update_errors), 1)
+            self.assertRegex(str(update_errors[0]), "in progress")
+            self.assertIsNone(read_activation(root))
 
     def test_post_activation_failure_restores_the_activation_actually_replaced(self):
         with tempfile.TemporaryDirectory() as directory:

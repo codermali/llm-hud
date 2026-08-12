@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 import hashlib
 import json
 import os
@@ -27,13 +28,13 @@ from llm_hud.runtime import (
     RuntimeLayoutError,
     RuntimeLock,
     RuntimeMetadata,
-    activate_with_replaced,
-    clear_activation,
+    _activate_with_replaced_unlocked,
+    _clear_activation_unlocked,
+    _restore_activation_unlocked,
     embedded_runtime_version,
     finalize_runtime,
     initialize_layout,
     read_activation,
-    restore_activation,
     source_digest,
     validate_release_id,
     validate_runtime,
@@ -1245,6 +1246,7 @@ def _install_runtime_from_source(
     python: Path | None = None,
     *,
     stable_control: str | None = None,
+    after_activation: Callable[[Path, RuntimeMetadata], None] | None = None,
 ) -> tuple[RuntimeMetadata, Activation, Activation | None]:
     source = Path(source)
     root = Path(root)
@@ -1309,15 +1311,27 @@ def _install_runtime_from_source(
             metadata.version,
             stable_control,
         )
-        activation, replaced_activation = activate_with_replaced(
-            root,
-            metadata.release_id,
-            expected_active=expected_active,
-        )
-        if replaced_activation is None and expected_active is not None:
-            # A same-release reinstall is a no-op activation. Preserve its
-            # exact record so a later failure does not clear a valid install.
-            replaced_activation = activation
+        with RuntimeLock(root):
+            activation, replaced_activation = _activate_with_replaced_unlocked(
+                root,
+                metadata.release_id,
+                expected_active=expected_active,
+            )
+            if replaced_activation is None and expected_active is not None:
+                # A same-release reinstall is a no-op activation. Preserve its
+                # exact record so a later failure does not clear a valid install.
+                replaced_activation = activation
+            try:
+                if after_activation is not None:
+                    after_activation(root, metadata)
+            except Exception as error:
+                _restore_after_install_failure_unlocked(
+                    root,
+                    replaced_activation,
+                    metadata.release_id,
+                    error,
+                )
+                raise
         return metadata, activation, replaced_activation
     finally:
         _remove_staging(
@@ -1348,31 +1362,25 @@ def _install_versioned_runtime(
     source: Path,
     root: Path,
     python: Path | None = None,
+    *,
+    after_stable_tools: Callable[[Path, RuntimeMetadata], None] | None = None,
 ) -> tuple[RuntimeMetadata, Activation, Activation | None]:
     source = Path(source)
     root = Path(root)
     tools = load_stable_tools(source)
-    metadata, activation, replaced_activation = _install_runtime_from_source(
+
+    def finish_install(resolved_root: Path, metadata: RuntimeMetadata) -> None:
+        _install_stable_tools_unlocked(resolved_root, tools)
+        if after_stable_tools is not None:
+            after_stable_tools(resolved_root, metadata)
+
+    return _install_runtime_from_source(
         source,
         root,
         python,
         stable_control=tools.control,
+        after_activation=finish_install,
     )
-    try:
-        install_stable_tools(
-            tools,
-            root,
-            expected_active=metadata.release_id,
-        )
-    except Exception as error:
-        _restore_after_install_failure(
-            root,
-            replaced_activation,
-            metadata.release_id,
-            error,
-        )
-        raise
-    return metadata, activation, replaced_activation
 
 
 def install_versioned_runtime(
@@ -1384,7 +1392,7 @@ def install_versioned_runtime(
     return metadata, activation
 
 
-def _restore_after_install_failure(
+def _restore_after_install_failure_unlocked(
     root: Path,
     replaced_activation: Activation | None,
     expected_active: str,
@@ -1392,7 +1400,7 @@ def _restore_after_install_failure(
 ) -> None:
     if replaced_activation is None:
         try:
-            clear_activation(root, expected_active=expected_active)
+            _clear_activation_unlocked(root, expected_active=expected_active)
         except RuntimeLayoutError as clear_error:
             raise RuntimeLayoutError(
                 f"installation failed ({failure}); clearing the new activation "
@@ -1400,7 +1408,7 @@ def _restore_after_install_failure(
             ) from failure
         return
     try:
-        restore_activation(
+        _restore_activation_unlocked(
             root,
             replaced_activation,
             expected_active=expected_active,
@@ -1449,31 +1457,26 @@ def install_complete(
 ) -> tuple[RuntimeMetadata, Activation]:
     source = Path(source)
     root = Path(root)
-    launcher = Path(launcher)
-    python = Path(python)
+    launcher = _canonical_file_path(Path(launcher), "external launcher")
+    python = _validate_launcher_path(Path(python), "Python interpreter")
     _preflight_external_launcher(root, launcher)
-    metadata, activation, replaced_activation = _install_versioned_runtime(
-        source,
-        root,
-        python,
-    )
-    root = root.resolve(strict=True)
-    try:
-        _smoke_test_dispatcher(root, python, metadata.version)
-        install_external_launcher(
-            root,
+
+    def finish_install(resolved_root: Path, metadata: RuntimeMetadata) -> None:
+        _smoke_test_dispatcher(resolved_root, python, metadata.version)
+        _install_external_launcher_unlocked(
+            resolved_root,
             launcher,
             python,
             expected_active=metadata.release_id,
         )
-    except Exception as error:
-        _restore_after_install_failure(
-            root,
-            replaced_activation,
-            metadata.release_id,
-            error,
-        )
-        raise
+
+    metadata, activation, _ = _install_versioned_runtime(
+        source,
+        root,
+        python,
+        after_stable_tools=finish_install,
+    )
+    root = root.resolve(strict=True)
     try:
         _prune_inactive_runtimes(root)
     except RuntimeLayoutError:

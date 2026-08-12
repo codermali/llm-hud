@@ -441,6 +441,35 @@ def activate_with_replaced(
         )
 
 
+def _restore_activation_unlocked(
+    root: Path,
+    previous: Activation,
+    *,
+    expected_active: str,
+) -> Activation:
+    validate_release_id(expected_active)
+    current = read_activation(root)
+    actual_active = current.active if current is not None else None
+    if actual_active != expected_active:
+        raise RuntimeLayoutError(
+            f"active runtime changed from {expected_active!r} "
+            f"to {actual_active!r}"
+        )
+    validate_runtime(root, previous.active)
+    try:
+        atomic_write_text(
+            root / ACTIVATION_NAME,
+            format_activation(previous),
+            mode=0o600,
+            follow_symlinks=False,
+        )
+    except OSError as error:
+        raise RuntimeLayoutError(
+            f"cannot restore activation record: {error}"
+        ) from error
+    return previous
+
+
 def restore_activation(
     root: Path,
     previous: Activation,
@@ -451,26 +480,33 @@ def restore_activation(
     """Restore an exact earlier activation after a failed installation."""
     validate_release_id(expected_active)
     with RuntimeLock(root, timeout=lock_timeout):
-        current = read_activation(root)
-        actual_active = current.active if current is not None else None
-        if actual_active != expected_active:
-            raise RuntimeLayoutError(
-                f"active runtime changed from {expected_active!r} "
-                f"to {actual_active!r}"
-            )
-        validate_runtime(root, previous.active)
-        try:
-            atomic_write_text(
-                root / ACTIVATION_NAME,
-                format_activation(previous),
-                mode=0o600,
-                follow_symlinks=False,
-            )
-        except OSError as error:
-            raise RuntimeLayoutError(
-                f"cannot restore activation record: {error}"
-            ) from error
-        return previous
+        return _restore_activation_unlocked(
+            root,
+            previous,
+            expected_active=expected_active,
+        )
+
+
+def _clear_activation_unlocked(
+    root: Path,
+    *,
+    expected_active: str,
+) -> None:
+    validate_release_id(expected_active)
+    current = read_activation(root)
+    actual_active = current.active if current is not None else None
+    if actual_active != expected_active:
+        raise RuntimeLayoutError(
+            f"active runtime changed from {expected_active!r} "
+            f"to {actual_active!r}"
+        )
+    try:
+        (root / ACTIVATION_NAME).unlink()
+        fsync_directory(root)
+    except OSError as error:
+        raise RuntimeLayoutError(
+            f"cannot clear activation record: {error}"
+        ) from error
 
 
 def clear_activation(
@@ -482,20 +518,7 @@ def clear_activation(
     """Remove an activation record only if it still names the expected runtime."""
     validate_release_id(expected_active)
     with RuntimeLock(root, timeout=lock_timeout):
-        current = read_activation(root)
-        actual_active = current.active if current is not None else None
-        if actual_active != expected_active:
-            raise RuntimeLayoutError(
-                f"active runtime changed from {expected_active!r} "
-                f"to {actual_active!r}"
-            )
-        try:
-            (root / ACTIVATION_NAME).unlink()
-            fsync_directory(root)
-        except OSError as error:
-            raise RuntimeLayoutError(
-                f"cannot clear activation record: {error}"
-            ) from error
+        _clear_activation_unlocked(root, expected_active=expected_active)
 
 
 def _read_source_file(path: Path) -> tuple[bytes, bool]:
