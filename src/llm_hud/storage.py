@@ -328,7 +328,11 @@ def atomic_write_text(
     fd, temp_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
     temp_path = Path(temp_name)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        # ``content`` already carries the caller's chosen newline style.  In
+        # particular, the TOML editor preserves CRLF input; allowing Windows
+        # text mode to translate it again would turn CRLF into CRCRLF and make
+        # the next parse fail.
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
             handle.write(content)
             set_descriptor_mode(handle.fileno(), target_mode)
             handle.flush()

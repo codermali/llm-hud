@@ -22,6 +22,15 @@ def file_mode(path: Path) -> int:
 
 
 class AtomicWriteTests(unittest.TestCase):
+    def test_text_preserves_explicit_crlf_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            content = "[tui]\r\nnotifications = true\r\n"
+
+            atomic_write_text(path, content)
+
+            self.assertEqual(path.read_bytes(), content.encode("utf-8"))
+
     def test_text_preserves_existing_mode(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"

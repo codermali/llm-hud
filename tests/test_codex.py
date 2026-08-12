@@ -18,6 +18,35 @@ def status_line(path: Path):
 
 
 class CodexProviderTests(unittest.TestCase):
+    def test_crlf_config_survives_reinstall_and_uninstall(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            original = b'[tui]\r\nstatus_line = ["current-dir"]\r\n'
+            config.write_bytes(original)
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = CodexProvider()
+                installed = provider.install("ignored")
+                self.assertEqual(installed.status, "installed", installed.message)
+                self.assertNotIn(b"\r\r\n", config.read_bytes())
+                reinstalled = provider.install("ignored")
+                self.assertEqual(
+                    reinstalled.status,
+                    "installed",
+                    reinstalled.message,
+                )
+                uninstalled = provider.uninstall()
+                self.assertEqual(
+                    uninstalled.status,
+                    "uninstalled",
+                    uninstalled.message,
+                )
+
+            self.assertEqual(config.read_bytes(), original)
+
     def test_configures_current_native_hud_fields(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
