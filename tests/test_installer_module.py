@@ -266,6 +266,88 @@ class RuntimeInstallerTests(unittest.TestCase):
                             ):
                                 claim_install_root(root)
 
+    def test_claim_retries_short_marker_writes_until_complete(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            marker = root / INSTALL_MARKER_NAME
+            original_write = os.write
+            writes = 0
+
+            def short_write(descriptor, content):
+                nonlocal writes
+                writes += 1
+                return original_write(descriptor, content[:3])
+
+            with mock.patch("llm_hud.installer.os.write", side_effect=short_write):
+                claim_install_root(root)
+
+            self.assertGreater(writes, 1)
+            self.assertEqual(
+                marker.read_text(),
+                f"{INSTALL_MARKER_VALUE}\n",
+            )
+
+    def test_claim_removes_its_incomplete_marker_after_a_zero_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            marker = root / INSTALL_MARKER_NAME
+
+            with (
+                mock.patch("llm_hud.installer.os.write", return_value=0),
+                mock.patch("llm_hud.installer.fsync_directory") as sync_directory,
+            ):
+                with self.assertRaisesRegex(RuntimeLayoutError, "write returned no data"):
+                    claim_install_root(root)
+
+            self.assertFalse(marker.exists())
+            sync_directory.assert_called_once_with(root.resolve())
+
+    def test_claim_removes_its_incomplete_marker_after_a_write_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            marker = root / INSTALL_MARKER_NAME
+
+            with mock.patch(
+                "llm_hud.installer.os.write",
+                side_effect=OSError("simulated marker write failure"),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeLayoutError,
+                    "simulated marker write failure",
+                ):
+                    claim_install_root(root)
+
+            self.assertFalse(marker.exists())
+
+    def test_claim_failure_does_not_remove_a_replacement_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            marker = root / INSTALL_MARKER_NAME
+            original = root / "original-marker"
+            replacement = b"concurrent replacement\n"
+
+            def replace_marker_then_fail(_descriptor, _content):
+                marker.rename(original)
+                marker.write_bytes(replacement)
+                raise OSError("simulated marker write failure")
+
+            with mock.patch(
+                "llm_hud.installer.os.write",
+                side_effect=replace_marker_then_fail,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeLayoutError,
+                    "simulated marker write failure",
+                ):
+                    claim_install_root(root)
+
+            self.assertEqual(marker.read_bytes(), replacement)
+            self.assertTrue(original.exists())
+
     def test_stable_tools_are_refreshed_and_stale_state_removed(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "runtime"

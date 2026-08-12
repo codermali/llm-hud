@@ -109,6 +109,29 @@ def _dangerous_install_roots() -> set[Path]:
     return resolved
 
 
+def _remove_failed_install_marker(
+    root: Path,
+    marker: Path,
+    identity: tuple[int, int],
+) -> None:
+    """Remove an incomplete marker only while it is still the file we created."""
+    try:
+        metadata = marker.lstat()
+    except OSError:
+        return
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISREG(metadata.st_mode)
+        or (metadata.st_dev, metadata.st_ino) != identity
+    ):
+        return
+    try:
+        marker.unlink()
+    except OSError:
+        return
+    fsync_directory(root)
+
+
 def claim_install_root(root: Path) -> None:
     root = _validate_launcher_path(Path(root), "install root")
     metadata = _metadata(root, "install root")
@@ -155,15 +178,31 @@ def claim_install_root(root: Path) -> None:
         raise RuntimeLayoutError(
             f"cannot create install marker {marker}: {error}"
         ) from error
+    identity: tuple[int, int] | None = None
+    failure: OSError | None = None
     try:
-        os.write(descriptor, payload)
+        opened = os.fstat(descriptor)
+        identity = (opened.st_dev, opened.st_ino)
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise OSError("write returned no data")
+            remaining = remaining[written:]
         os.fsync(descriptor)
     except OSError as error:
-        raise RuntimeLayoutError(
-            f"cannot write install marker {marker}: {error}"
-        ) from error
-    finally:
+        failure = error
+    try:
         os.close(descriptor)
+    except OSError as error:
+        if failure is None:
+            failure = error
+    if failure is not None:
+        if identity is not None:
+            _remove_failed_install_marker(root, marker, identity)
+        raise RuntimeLayoutError(
+            f"cannot write install marker {marker}: {failure}"
+        ) from failure
     fsync_directory(root)
 
 
