@@ -22,6 +22,9 @@ WHEEL_PACKAGE_FILES = frozenset(
         "llm_hud/_tomllib.py",
         "llm_hud/_vendor/__init__.py",
         "llm_hud/_vendor/tomli/__init__.py",
+        "llm_hud/_vendor/tomli/_parser.py",
+        "llm_hud/_vendor/tomli/_re.py",
+        "llm_hud/_vendor/tomli/_types.py",
         "llm_hud/_vendor/tomli/LICENSE",
     )
 )
@@ -31,6 +34,9 @@ SDIST_PACKAGE_FILES = frozenset(
         "src/llm_hud/_tomllib.py",
         "src/llm_hud/_vendor/__init__.py",
         "src/llm_hud/_vendor/tomli/__init__.py",
+        "src/llm_hud/_vendor/tomli/_parser.py",
+        "src/llm_hud/_vendor/tomli/_re.py",
+        "src/llm_hud/_vendor/tomli/_types.py",
         "src/llm_hud/_vendor/tomli/LICENSE",
     )
 )
