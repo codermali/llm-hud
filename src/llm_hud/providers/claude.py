@@ -9,12 +9,17 @@ from pathlib import Path
 from typing import Any
 
 from llm_hud.hud import HudSnapshot, UsageWindow, render_hud
-from llm_hud.paths import claude_settings_path, provider_state_path
+from llm_hud.paths import (
+    claude_settings_path,
+    provider_journal_path,
+    provider_state_path,
+)
 from llm_hud.providers.base import Provider, ProviderCapabilities, Result
 from llm_hud.storage import (
     StateFileError,
     atomic_write_json,
     atomic_write_provider_state,
+    read_provider_journal,
     read_provider_state,
     resolve_file_target,
     restore_provider_state,
@@ -37,6 +42,47 @@ def _matches_original(settings: dict[str, Any], state: dict[str, Any]) -> bool:
     return not present or settings.get("statusLine") == state.get(
         "original_status_line"
     )
+
+
+def _recover_interrupted(
+    state_path: Path, journal_path: Path, settings: dict[str, Any]
+) -> None:
+    """Commit or roll back a provider transaction interrupted mid-write.
+
+    A journal exists only between the first and last write of an
+    install/uninstall; whether the settings write completed decides the
+    direction, so recovery is idempotent under repeated crashes.
+    """
+    journal = read_provider_journal(journal_path)
+    if journal is None:
+        return
+    previous = journal.get("previous_state")
+    pending = journal.get("pending_state")
+    if journal.get("op") == "install" and isinstance(pending, dict):
+        installed = _installed_status_line_from_state(pending)
+        if installed is not None and settings.get("statusLine") == installed:
+            # The settings write completed: commit the pending state.
+            atomic_write_provider_state(state_path, pending)
+        else:
+            restore_provider_state(
+                state_path, previous if isinstance(previous, dict) else None
+            )
+        journal_path.unlink(missing_ok=True)
+        return
+    if journal.get("op") == "uninstall" and isinstance(previous, dict):
+        installed = _installed_status_line_from_state(previous)
+        if installed is not None and settings.get("statusLine") == installed:
+            # The settings restore never happened: abort the uninstall.
+            atomic_write_provider_state(state_path, previous)
+        else:
+            state_path.unlink(missing_ok=True)
+        journal_path.unlink(missing_ok=True)
+        return
+    # Unrecognizable journal content: roll back and rely on state healing.
+    restore_provider_state(
+        state_path, previous if isinstance(previous, dict) else None
+    )
+    journal_path.unlink(missing_ok=True)
 
 
 def _command_argv(command: object) -> tuple[str, str, str] | None:
@@ -265,6 +311,7 @@ class ClaudeProvider(Provider):
     def install(self, command_path: str) -> Result:
         settings_path = claude_settings_path()
         state_path = provider_state_path(self.id)
+        journal_path = provider_journal_path(self.id)
         try:
             settings_target = resolve_file_target(settings_path)
             settings = _load_settings(settings_path, target=settings_target)
@@ -273,13 +320,14 @@ class ClaudeProvider(Provider):
 
         installed_command = shlex.join((command_path, "render", "claude"))
         try:
+            _recover_interrupted(state_path, journal_path, settings)
             existing_state = read_provider_state(
                 state_path, supported_schemas=STATE_SCHEMAS
             )
             if existing_state is not None:
                 validate_state_path(existing_state, "settings_path", settings_path)
                 _validate_installation_state(existing_state)
-        except StateFileError as error:
+        except (OSError, StateFileError) as error:
             return Result(self.id, "error", str(error))
         current = settings.get("statusLine")
         current_command = current.get("command") if isinstance(current, dict) else None
@@ -313,8 +361,15 @@ class ClaudeProvider(Provider):
             "installed_command": installed_command,
             "installed_status_line": configured,
         }
+        journal = {
+            "schema": 1,
+            "op": "install",
+            "previous_state": existing_state,
+            "pending_state": state,
+        }
         state_written = False
         try:
+            atomic_write_provider_state(journal_path, journal)
             atomic_write_provider_state(state_path, state)
             state_written = True
             settings["statusLine"] = configured
@@ -325,37 +380,43 @@ class ClaudeProvider(Provider):
                 expected_target=settings_target,
             )
         except OSError as error:
-            if state_written:
-                try:
+            try:
+                if state_written:
                     restore_provider_state(state_path, existing_state)
-                except OSError as rollback_error:
-                    return Result(
-                        self.id,
-                        "error",
-                        f"{error}; also failed to restore installation state: "
-                        f"{rollback_error}",
-                    )
+                journal_path.unlink(missing_ok=True)
+            except OSError as rollback_error:
+                return Result(
+                    self.id,
+                    "error",
+                    f"{error}; also failed to restore installation state: "
+                    f"{rollback_error}",
+                )
             return Result(self.id, "error", str(error))
+        try:
+            journal_path.unlink(missing_ok=True)
+        except OSError:
+            pass  # the next operation recovers a stale journal
         return Result(self.id, "installed", f"configured {settings_path}")
 
     def uninstall(self) -> Result:
         settings_path = claude_settings_path()
         state_path = provider_state_path(self.id)
+        journal_path = provider_journal_path(self.id)
         try:
-            state = read_provider_state(state_path, supported_schemas=STATE_SCHEMAS)
-            if state is not None:
-                settings_target = validate_state_path(
-                    state, "settings_path", settings_path
-                )
-                _validate_installation_state(state)
-        except StateFileError as error:
-            return Result(self.id, "error", str(error))
-        if state is None:
-            return Result(self.id, "skipped", "no installation state")
-        try:
+            settings_target = resolve_file_target(settings_path)
             settings = _load_settings(settings_path, target=settings_target)
         except (OSError, json.JSONDecodeError, ValueError) as error:
             return Result(self.id, "error", str(error))
+        try:
+            _recover_interrupted(state_path, journal_path, settings)
+            state = read_provider_state(state_path, supported_schemas=STATE_SCHEMAS)
+            if state is not None:
+                validate_state_path(state, "settings_path", settings_path)
+                _validate_installation_state(state)
+        except (OSError, StateFileError) as error:
+            return Result(self.id, "error", str(error))
+        if state is None:
+            return Result(self.id, "skipped", "no installation state")
 
         current = settings.get("statusLine")
         installed = _installed_status_line_from_state(state)
@@ -376,7 +437,14 @@ class ClaudeProvider(Provider):
             settings["statusLine"] = state.get("original_status_line")
         else:
             settings.pop("statusLine", None)
+        journal = {
+            "schema": 1,
+            "op": "uninstall",
+            "previous_state": state,
+            "pending_state": None,
+        }
         try:
+            atomic_write_provider_state(journal_path, journal)
             atomic_write_json(
                 settings_path,
                 settings,
@@ -384,6 +452,7 @@ class ClaudeProvider(Provider):
                 expected_target=settings_target,
             )
             state_path.unlink(missing_ok=True)
+            journal_path.unlink(missing_ok=True)
         except OSError as error:
             return Result(self.id, "error", str(error))
         return Result(self.id, "uninstalled", f"restored {settings_path}")

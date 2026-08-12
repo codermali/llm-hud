@@ -19,6 +19,11 @@ def provider_state_path(provider_id: str) -> Path:
     return state_dir() / "providers" / f"{provider_id}.json"
 
 
+def provider_journal_path(provider_id: str) -> Path:
+    """A pending install/uninstall transaction journal for one provider."""
+    return state_dir() / "providers" / f"{provider_id}.journal.json"
+
+
 def claude_settings_path() -> Path:
     override = os.environ.get("LLM_HUD_CLAUDE_SETTINGS")
     if override:

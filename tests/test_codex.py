@@ -5,6 +5,7 @@ import tempfile
 import tomllib
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from llm_hud.providers.codex import CodexProvider, HUD_ITEMS
 from llm_hud.toml_edit import set_array
@@ -199,6 +200,36 @@ class CodexProviderTests(unittest.TestCase):
                 config.write_text(original)  # reverted again
                 self.assertEqual(provider.uninstall().status, "uninstalled")
                 self.assertFalse(state_path.exists())
+                self.assertEqual(config.read_text(), original)
+
+    def test_crash_between_state_and_config_writes_is_recovered(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            original = '[tui]\nstatus_line = ["current-dir"]\n'
+            config.write_text(original)
+            providers_dir = root / "state" / "providers"
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = CodexProvider()
+                # Crash after the journal and state writes, before the config.
+                with mock.patch(
+                    "llm_hud.providers.codex.atomic_write_text",
+                    side_effect=KeyboardInterrupt,
+                ):
+                    with self.assertRaises(KeyboardInterrupt):
+                        provider.install("ignored")
+                self.assertTrue((providers_dir / "codex.journal.json").exists())
+                self.assertEqual(config.read_text(), original)
+
+                # The next install recovers the journal and completes.
+                self.assertEqual(provider.install("ignored").status, "installed")
+                self.assertFalse((providers_dir / "codex.journal.json").exists())
+                self.assertEqual(status_line(config), HUD_ITEMS)
+
+                self.assertEqual(provider.uninstall().status, "uninstalled")
                 self.assertEqual(config.read_text(), original)
 
     def test_unwritable_table_reports_error_without_touching_the_file(self):

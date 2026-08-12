@@ -268,6 +268,100 @@ class ClaudeProviderTests(unittest.TestCase):
                 self.assertFalse(state_path.exists())
                 self.assertEqual(json.loads(settings.read_text()), {})
 
+    def test_crash_between_state_and_settings_writes_is_recovered(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "settings.json"
+            providers_dir = root / "state" / "providers"
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = ClaudeProvider()
+                # Crash after the journal and state writes, before settings.
+                with mock.patch(
+                    "llm_hud.providers.claude.atomic_write_json",
+                    side_effect=KeyboardInterrupt,
+                ):
+                    with self.assertRaises(KeyboardInterrupt):
+                        provider.install("/opt/llm-hud")
+                self.assertTrue((providers_dir / "claude.journal.json").exists())
+                self.assertFalse(settings.exists())
+
+                # The next install recovers the journal and completes.
+                self.assertEqual(provider.install("/opt/llm-hud").status, "installed")
+                self.assertFalse((providers_dir / "claude.journal.json").exists())
+                self.assertEqual(
+                    json.loads(settings.read_text())["statusLine"]["command"],
+                    "/opt/llm-hud render claude",
+                )
+                state = json.loads((providers_dir / "claude.json").read_text())
+                self.assertFalse(state["original_present"])
+
+                self.assertEqual(provider.uninstall().status, "uninstalled")
+                self.assertNotIn("statusLine", json.loads(settings.read_text()))
+
+    def test_crash_during_uninstall_restore_is_recovered(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "settings.json"
+            providers_dir = root / "state" / "providers"
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = ClaudeProvider()
+                provider.install("/opt/llm-hud")
+                installed_settings = settings.read_text()
+
+                # Crash after the uninstall journal, before the restore write.
+                with mock.patch(
+                    "llm_hud.providers.claude.atomic_write_json",
+                    side_effect=KeyboardInterrupt,
+                ):
+                    with self.assertRaises(KeyboardInterrupt):
+                        provider.uninstall()
+                self.assertTrue((providers_dir / "claude.journal.json").exists())
+                self.assertEqual(settings.read_text(), installed_settings)
+
+                # The next uninstall aborts the stale journal, then completes.
+                self.assertEqual(provider.uninstall().status, "uninstalled")
+                self.assertFalse((providers_dir / "claude.journal.json").exists())
+                self.assertFalse((providers_dir / "claude.json").exists())
+                self.assertNotIn("statusLine", json.loads(settings.read_text()))
+
+    def test_completed_but_unfinalized_uninstall_is_committed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "settings.json"
+            providers_dir = root / "state" / "providers"
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = ClaudeProvider()
+                provider.install("/opt/llm-hud")
+                state = json.loads((providers_dir / "claude.json").read_text())
+                # Simulate a crash after the settings restore but before the
+                # state and journal cleanup.
+                settings.write_text("{}")
+                (providers_dir / "claude.journal.json").write_text(
+                    json.dumps(
+                        {
+                            "schema": 1,
+                            "op": "uninstall",
+                            "previous_state": state,
+                            "pending_state": None,
+                        }
+                    )
+                )
+
+                result = provider.uninstall()
+                self.assertEqual(result.status, "skipped")
+                self.assertEqual(result.message, "no installation state")
+                self.assertFalse((providers_dir / "claude.journal.json").exists())
+                self.assertFalse((providers_dir / "claude.json").exists())
+
     def test_forget_abandons_state_without_touching_settings(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

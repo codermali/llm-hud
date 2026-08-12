@@ -118,6 +118,23 @@ def read_provider_state(
     return payload
 
 
+JOURNAL_SCHEMAS = frozenset((1,))
+
+
+def read_provider_journal(path: Path) -> dict[str, Any] | None:
+    """Read a pending provider transaction journal; None when absent."""
+    journal = read_provider_state(path, supported_schemas=JOURNAL_SCHEMAS)
+    if journal is None:
+        return None
+    if journal.get("op") not in ("install", "uninstall"):
+        raise StateFileError(f"installation journal has an invalid op: {path}")
+    for key in ("previous_state", "pending_state"):
+        value = journal.get(key)
+        if value is not None and not isinstance(value, dict):
+            raise StateFileError(f"installation journal has an invalid {key}: {path}")
+    return journal
+
+
 def validate_state_path(state: dict[str, Any], key: str, current: Path) -> Path:
     """Reject state belonging to a different provider configuration file."""
     saved = state.get(key)

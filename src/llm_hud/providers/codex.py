@@ -3,12 +3,17 @@ from __future__ import annotations
 import tomllib
 from typing import Any
 
-from llm_hud.paths import codex_config_path, provider_state_path
+from llm_hud.paths import (
+    codex_config_path,
+    provider_journal_path,
+    provider_state_path,
+)
 from llm_hud.providers.base import Provider, ProviderCapabilities, Result
 from llm_hud.storage import (
     StateFileError,
     atomic_write_provider_state,
     atomic_write_text,
+    read_provider_journal,
     read_provider_state,
     resolve_file_target,
     restore_provider_state,
@@ -80,6 +85,42 @@ def _restore_items(current: list[str], state: dict[str, Any]) -> list[str] | Non
     return [*original, *extras]
 
 
+def _recover_interrupted(
+    state_path: Path, journal_path: Path, present: bool, items: list[str]
+) -> None:
+    """Commit or roll back a provider transaction interrupted mid-write."""
+    journal = read_provider_journal(journal_path)
+    if journal is None:
+        return
+    previous = journal.get("previous_state")
+    pending = journal.get("pending_state")
+    if journal.get("op") == "install" and isinstance(pending, dict):
+        installed = pending.get("installed_items")
+        if present and isinstance(installed, list) and items == installed:
+            # The config write completed: commit the pending state.
+            atomic_write_provider_state(state_path, pending)
+        else:
+            restore_provider_state(
+                state_path, previous if isinstance(previous, dict) else None
+            )
+        journal_path.unlink(missing_ok=True)
+        return
+    if journal.get("op") == "uninstall" and isinstance(previous, dict):
+        installed = previous.get("installed_items")
+        if present and isinstance(installed, list) and items == installed:
+            # The config restore never happened: abort the uninstall.
+            atomic_write_provider_state(state_path, previous)
+        else:
+            state_path.unlink(missing_ok=True)
+        journal_path.unlink(missing_ok=True)
+        return
+    # Unrecognizable journal content: roll back and rely on state healing.
+    restore_provider_state(
+        state_path, previous if isinstance(previous, dict) else None
+    )
+    journal_path.unlink(missing_ok=True)
+
+
 def _validate_installation_state(state: dict[str, Any]) -> None:
     if not isinstance(state.get("original_present"), bool):
         raise StateFileError("installation state has no valid original_present flag")
@@ -102,6 +143,7 @@ class CodexProvider(Provider):
         del command_path
         path = codex_config_path()
         state_path = provider_state_path(self.id)
+        journal_path = provider_journal_path(self.id)
         try:
             config_target = resolve_file_target(path)
             text, parsed = _load_config(target=config_target)
@@ -110,13 +152,14 @@ class CodexProvider(Provider):
             return Result(self.id, "error", f"cannot read {path}: {error}")
 
         try:
+            _recover_interrupted(state_path, journal_path, current_present, current)
             existing_state = read_provider_state(
                 state_path, supported_schemas=STATE_SCHEMAS
             )
             if existing_state is not None:
                 validate_state_path(existing_state, "config_path", path)
                 _validate_installation_state(existing_state)
-        except StateFileError as error:
+        except (OSError, StateFileError) as error:
             return Result(self.id, "error", str(error))
         if existing_state is not None:
             restored = _restore_items(current, existing_state)
@@ -142,43 +185,58 @@ class CodexProvider(Provider):
             "original_items": original_items,
             "installed_items": installed,
         }
+        journal = {
+            "schema": 1,
+            "op": "install",
+            "previous_state": existing_state,
+            "pending_state": state,
+        }
         state_written = False
         try:
             updated = set_array(text, "tui", "status_line", installed)
+            atomic_write_provider_state(journal_path, journal)
             atomic_write_provider_state(state_path, state)
             state_written = True
             atomic_write_text(path, updated, expected_target=config_target)
         except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
-            if state_written:
-                try:
+            try:
+                if state_written:
                     restore_provider_state(state_path, existing_state)
-                except OSError as rollback_error:
-                    return Result(
-                        self.id,
-                        "error",
-                        f"{error}; also failed to restore installation state: "
-                        f"{rollback_error}",
-                    )
+                journal_path.unlink(missing_ok=True)
+            except OSError as rollback_error:
+                return Result(
+                    self.id,
+                    "error",
+                    f"{error}; also failed to restore installation state: "
+                    f"{rollback_error}",
+                )
             return Result(self.id, "error", str(error))
+        try:
+            journal_path.unlink(missing_ok=True)
+        except OSError:
+            pass  # the next operation recovers a stale journal
         return Result(self.id, "installed", f"configured {path}")
 
     def uninstall(self) -> Result:
         path = codex_config_path()
         state_path = provider_state_path(self.id)
+        journal_path = provider_journal_path(self.id)
         try:
-            state = read_provider_state(state_path, supported_schemas=STATE_SCHEMAS)
-            if state is not None:
-                config_target = validate_state_path(state, "config_path", path)
-                _validate_installation_state(state)
-        except StateFileError as error:
-            return Result(self.id, "error", str(error))
-        if state is None:
-            return Result(self.id, "skipped", "no installation state")
-        try:
+            config_target = resolve_file_target(path)
             text, parsed = _load_config(target=config_target)
             present, current = _status_line(parsed)
         except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
             return Result(self.id, "error", f"cannot read {path}: {error}")
+        try:
+            _recover_interrupted(state_path, journal_path, present, current)
+            state = read_provider_state(state_path, supported_schemas=STATE_SCHEMAS)
+            if state is not None:
+                validate_state_path(state, "config_path", path)
+                _validate_installation_state(state)
+        except (OSError, StateFileError) as error:
+            return Result(self.id, "error", str(error))
+        if state is None:
+            return Result(self.id, "skipped", "no installation state")
         if not present:
             state_path.unlink(missing_ok=True)
             return Result(self.id, "uninstalled", "status line already removed")
@@ -193,13 +251,21 @@ class CodexProvider(Provider):
                     "status_line already restored; removed installation state",
                 )
             return Result(self.id, "conflict", _CONFLICT_MESSAGE)
+        journal = {
+            "schema": 1,
+            "op": "uninstall",
+            "previous_state": state,
+            "pending_state": None,
+        }
         try:
             if not state.get("original_present") and not restored:
                 updated = remove_key(text, "tui", "status_line")
             else:
                 updated = set_array(text, "tui", "status_line", restored)
+            atomic_write_provider_state(journal_path, journal)
             atomic_write_text(path, updated, expected_target=config_target)
             state_path.unlink(missing_ok=True)
+            journal_path.unlink(missing_ok=True)
         except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
             return Result(self.id, "error", str(error))
         return Result(self.id, "uninstalled", f"restored {path}")
