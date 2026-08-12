@@ -19,7 +19,7 @@ Claude Code 支持外部状态栏命令，因此可以显示完整的双行 HUD�
 
 ```text
 Claude · Opus · ~/projects/example
-5h  ████████░░  76%  ↻ 14:30    7d  ██████░░░░  59%  ↻ Fri 09:00
+5h  ████████░░   76% left  ↻ 14:30    7d  ██████░░░░   59% left  ↻ Fri 09:00
 ```
 
 额度数据由 Claude Code 提供，只在 Claude Pro/Max 订阅账户上出现，并且要等到会话的

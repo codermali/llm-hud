@@ -18,7 +18,7 @@ class HudTests(unittest.TestCase):
             self.assertEqual(
                 render_hud(snapshot, color=False),
                 "Claude · Opus · ~/Desktop/llm-hud\n"
-                "5h  ████████░░   76%    7d  ██████░░░░   59%",
+                "5h  ████████░░   76% left    7d  ██████░░░░   59% left",
             )
 
     def test_windows_without_data_render_placeholder_bars(self):
@@ -45,8 +45,36 @@ class HudTests(unittest.TestCase):
         )
         self.assertEqual(
             render_hud(snapshot, color=False).splitlines(),
-            ["Claude", "5h  ████████░░   76%", "7d  ██████░░░░   59%"],
+            ["Claude", "5h  ████████░░   76% left", "7d  ██████░░░░   59% left"],
         )
+
+    def test_control_characters_are_stripped_from_upstream_fields(self):
+        snapshot = HudSnapshot(
+            provider="Claude",
+            model="Opus\x1b]0;pwned\x07",
+            cwd="/tmp/dir\nname",
+        )
+        self.assertEqual(
+            render_hud(snapshot, color=False), "Claude · Opus]0;pwned · /tmp/dirname"
+        )
+
+    def test_wide_characters_count_as_two_columns(self):
+        # 10 CJK chars = 20 display columns; len() would count 10.
+        snapshot = HudSnapshot(provider="Claude", cwd="/" + "中" * 10, columns=24)
+        rendered = render_hud(snapshot, color=False)
+        self.assertTrue(rendered.startswith("Claude · …"))
+        self.assertIn("中", rendered)
+
+    def test_long_paths_are_truncated_keeping_the_tail(self):
+        snapshot = HudSnapshot(
+            provider="Claude",
+            model="Opus",
+            cwd="/very/long/path/to/some/deeply/nested/project",
+            columns=40,
+        )
+        rendered = render_hud(snapshot, color=False)
+        self.assertEqual(rendered, "Claude · Opus · …e/deeply/nested/project")
+        self.assertLessEqual(len(rendered), 40)
 
 
 if __name__ == "__main__":

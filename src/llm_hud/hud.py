@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import os
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 BAR_WIDTH = 10
 
 
@@ -29,6 +31,36 @@ class HudSnapshot:
 
 def _style(text: str, code: str, enabled: bool) -> str:
     return f"\033[{code}m{text}\033[0m" if enabled else text
+
+
+def _sanitize(value: str) -> str:
+    """Strip control characters from upstream-supplied display fields."""
+    return CONTROL_RE.sub("", value)
+
+
+def _char_width(char: str) -> int:
+    if unicodedata.combining(char):
+        return 0
+    return 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+
+
+def _display_width(value: str) -> int:
+    return sum(_char_width(char) for char in ANSI_RE.sub("", value))
+
+
+def _truncate_left(value: str, width: int) -> str:
+    """Keep the right end of value within width display columns."""
+    if _display_width(value) <= width:
+        return value
+    kept: list[str] = []
+    used = 1  # the ellipsis
+    for char in reversed(value):
+        char_width = _char_width(char)
+        if used + char_width > width:
+            break
+        kept.append(char)
+        used += char_width
+    return "…" + "".join(reversed(kept))
 
 
 def _compact_path(value: str | None) -> str | None:
@@ -83,6 +115,8 @@ def _window_segment(window: UsageWindow, color: bool) -> str:
     tone = _remaining_color(window.remaining)
     bar = _style("█" * filled, tone, color) + _style("░" * (BAR_WIDTH - filled), "2", color)
     percent = _style(f"{_percent(window.remaining):>4}", tone, color)
+    if window.remaining is not None:
+        percent = f"{percent} {_style('left', '2', color)}"
     parts = [f"{window.label:<2}", bar, percent]
     reset = _reset_text(window)
     if reset:
@@ -90,15 +124,21 @@ def _window_segment(window: UsageWindow, color: bool) -> str:
     return "  ".join(parts)
 
 
-def _visible_length(value: str) -> int:
-    return len(ANSI_RE.sub("", value))
-
-
 def render_hud(snapshot: HudSnapshot, color: bool = True) -> str:
-    header_parts = [_style(snapshot.provider, "1;38;5;208", color)]
-    if snapshot.model:
-        header_parts.append(snapshot.model)
-    cwd = _compact_path(snapshot.cwd)
+    columns = snapshot.columns if snapshot.columns and snapshot.columns > 0 else 120
+    provider = _sanitize(snapshot.provider)
+    model = _sanitize(snapshot.model) if snapshot.model else None
+    cwd = _compact_path(_sanitize(snapshot.cwd) if snapshot.cwd else None)
+    if cwd:
+        prefix = _display_width(provider)
+        if model:
+            prefix += _display_width(model) + 3
+        available = columns - prefix - 3
+        cwd = _truncate_left(cwd, available) if available >= 2 else None
+
+    header_parts = [_style(provider, "1;38;5;208", color)]
+    if model:
+        header_parts.append(model)
     if cwd:
         header_parts.append(_style(cwd, "2", color))
     header = " · ".join(header_parts)
@@ -108,7 +148,6 @@ def render_hud(snapshot: HudSnapshot, color: bool = True) -> str:
 
     segments = [_window_segment(window, color) for window in snapshot.windows]
     row = "    ".join(segments)
-    columns = snapshot.columns if snapshot.columns and snapshot.columns > 0 else 120
-    if _visible_length(row) <= columns:
+    if _display_width(row) <= columns:
         return f"{header}\n{row}"
     return "\n".join([header, *segments])

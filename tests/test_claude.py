@@ -81,7 +81,7 @@ class ClaudeProviderTests(unittest.TestCase):
                 self.assertEqual(
                     render(raw, color=False),
                     "Claude · Opus · ~/project\n"
-                    "5h  ████████░░   76%    7d  ██████░░░░   59%",
+                    "5h  ████████░░   76% left    7d  ██████░░░░   59% left",
                 )
 
                 self.assertEqual(provider.install("/opt/llm-hud").status, "installed")
@@ -538,7 +538,7 @@ class ClaudeProviderTests(unittest.TestCase):
                 ).encode()
                 self.assertEqual(
                     render(partial, color=False),
-                    "Claude · Opus\n7d  ██████░░░░   59%",
+                    "Claude · Opus\n7d  ██████░░░░   59% left",
                 )
                 empty_window = json.dumps(
                     {
@@ -563,12 +563,12 @@ class ClaudeProviderTests(unittest.TestCase):
         ).encode()
         wide = (
             "Claude · Opus\n"
-            "5h  ████████░░   76%    7d  ██████░░░░   59%"
+            "5h  ████████░░   76% left    7d  ██████░░░░   59% left"
         )
         narrow = (
             "Claude · Opus\n"
-            "5h  ████████░░   76%\n"
-            "7d  ██████░░░░   59%"
+            "5h  ████████░░   76% left\n"
+            "7d  ██████░░░░   59% left"
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -576,13 +576,13 @@ class ClaudeProviderTests(unittest.TestCase):
                 "LLM_HUD_CLAUDE_SETTINGS": str(root / "settings.json"),
                 "LLM_HUD_STATE_DIR": str(root / "state"),
             }
-            with Environment(**base, COLUMNS="45"):
+            with Environment(**base, COLUMNS="60"):
                 self.assertEqual(render(raw, color=False), wide)
-            with Environment(**base, COLUMNS="40"):
+            with Environment(**base, COLUMNS="50"):
                 self.assertEqual(render(raw, color=False), narrow)
             with Environment(**base, COLUMNS="not-a-number"):
                 fallback = json.loads(raw)
-                fallback["terminal"] = {"columns": 40}
+                fallback["terminal"] = {"columns": 50}
                 self.assertEqual(
                     render(json.dumps(fallback).encode(), color=False), narrow
                 )
