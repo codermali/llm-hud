@@ -344,6 +344,48 @@ class ClaudeProviderTests(unittest.TestCase):
             self.assertTrue((providers_dir / "claude.json").exists())
             self.assertFalse(journal_path.exists())
 
+    def test_restored_settings_change_before_state_cleanup_keeps_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "settings.json"
+            original = {
+                "statusLine": {
+                    "type": "command",
+                    "command": "printf prior",
+                }
+            }
+            settings.write_text(json.dumps(original))
+            state_path = root / "state" / "providers" / "claude.json"
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = ClaudeProvider()
+                self.assertEqual(
+                    provider.install("/opt/llm-hud").status, "installed"
+                )
+                installed = settings.read_bytes()
+                settings.write_text(json.dumps(original))
+                validate_snapshot = claude_module.validate_text_snapshot
+
+                def restore_hud_then_validate(path, **kwargs):
+                    settings.write_bytes(installed)
+                    return validate_snapshot(path, **kwargs)
+
+                with mock.patch(
+                    "llm_hud.providers.claude.validate_text_snapshot",
+                    side_effect=restore_hud_then_validate,
+                ):
+                    result = provider.uninstall()
+
+            self.assertEqual(result.status, "conflict")
+            self.assertIn("retry", result.message)
+            self.assertTrue(state_path.exists())
+            self.assertEqual(
+                json.loads(settings.read_text())["statusLine"]["command"],
+                "/opt/llm-hud render claude",
+            )
+
     def test_uninstall_does_not_replace_a_later_non_command_change(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

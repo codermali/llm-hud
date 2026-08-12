@@ -260,6 +260,35 @@ def read_text_snapshot(path: Path) -> tuple[str, bytes | None]:
     return content.decode("utf-8"), content
 
 
+def validate_text_snapshot(
+    path: Path,
+    *,
+    expected_target: Path,
+    expected_content: bytes | None,
+    follow_symlinks: bool = True,
+) -> None:
+    """Reject a target or content change without rewriting the file."""
+    try:
+        expected = expected_target.resolve(strict=False)
+    except (OSError, ValueError, RuntimeError) as error:
+        raise OSError(f"cannot resolve expected file target: {error}") from error
+    target = resolve_file_target(path, follow_symlinks=follow_symlinks)
+    if target != expected:
+        raise ContentChangedError(
+            f"configuration target changed while updating {path}; "
+            "left it untouched; retry the command"
+        )
+    try:
+        current_content = target.read_bytes()
+    except FileNotFoundError:
+        current_content = None
+    if current_content != expected_content:
+        raise ContentChangedError(
+            f"configuration changed while updating {path}; "
+            "left it untouched; retry the command"
+        )
+
+
 def atomic_write_text(
     path: Path,
     content: str,
@@ -312,23 +341,12 @@ def atomic_write_text(
             # Resolve again as late as possible.  This catches a symlink being
             # retargeted after the provider took its snapshot, while the byte
             # comparison catches in-place writes and atomic editor renames.
-            final_target = resolve_file_target(
-                path, follow_symlinks=follow_symlinks
+            validate_text_snapshot(
+                path,
+                expected_target=target,
+                expected_content=expected_content,
+                follow_symlinks=follow_symlinks,
             )
-            if final_target != target:
-                raise ContentChangedError(
-                    f"configuration target changed while updating {path}; "
-                    "left it untouched; retry the command"
-                )
-            try:
-                current_content = final_target.read_bytes()
-            except FileNotFoundError:
-                current_content = None
-            if current_content != expected_content:
-                raise ContentChangedError(
-                    f"configuration changed while updating {path}; "
-                    "left it untouched; retry the command"
-                )
         if not follow_symlinks:
             try:
                 final_metadata = target.lstat()

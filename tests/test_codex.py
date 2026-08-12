@@ -332,6 +332,38 @@ class CodexProviderTests(unittest.TestCase):
             self.assertTrue((providers_dir / "codex.json").exists())
             self.assertFalse(journal_path.exists())
 
+    def test_restored_config_change_before_state_cleanup_keeps_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            original = '[tui]\nstatus_line = ["current-dir"]\n'
+            config.write_text(original)
+            state_path = root / "state" / "providers" / "codex.json"
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = CodexProvider()
+                self.assertEqual(provider.install("ignored").status, "installed")
+                installed = config.read_bytes()
+                config.write_text(original)
+                validate_snapshot = codex_module.validate_text_snapshot
+
+                def restore_hud_then_validate(path, **kwargs):
+                    config.write_bytes(installed)
+                    return validate_snapshot(path, **kwargs)
+
+                with mock.patch(
+                    "llm_hud.providers.codex.validate_text_snapshot",
+                    side_effect=restore_hud_then_validate,
+                ):
+                    result = provider.uninstall()
+
+            self.assertEqual(result.status, "conflict")
+            self.assertIn("retry", result.message)
+            self.assertTrue(state_path.exists())
+            self.assertEqual(status_line(config), HUD_ITEMS)
+
     def test_future_state_schema_blocks_install_without_touching_config(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -22,6 +22,7 @@ from llm_hud.storage import (
     resolve_file_target,
     restore_provider_state,
     validate_state_path,
+    validate_text_snapshot,
 )
 from llm_hud.toml_edit import remove_key, set_array
 
@@ -273,13 +274,33 @@ class CodexProvider(Provider):
         if state is None:
             return Result(self.id, "skipped", "no installation state")
         if not present:
-            state_path.unlink(missing_ok=True)
+            try:
+                validate_text_snapshot(
+                    path,
+                    expected_target=config_target,
+                    expected_content=config_snapshot,
+                )
+                state_path.unlink(missing_ok=True)
+            except ContentChangedError as error:
+                return Result(self.id, "conflict", str(error))
+            except OSError as error:
+                return Result(self.id, "error", str(error))
             return Result(self.id, "uninstalled", "status line already removed")
 
         restored = _restore_items(current, state)
         if restored is None:
             if _matches_original(present, current, state):
-                state_path.unlink(missing_ok=True)
+                try:
+                    validate_text_snapshot(
+                        path,
+                        expected_target=config_target,
+                        expected_content=config_snapshot,
+                    )
+                    state_path.unlink(missing_ok=True)
+                except ContentChangedError as error:
+                    return Result(self.id, "conflict", str(error))
+                except OSError as error:
+                    return Result(self.id, "error", str(error))
                 return Result(
                     self.id,
                     "uninstalled",

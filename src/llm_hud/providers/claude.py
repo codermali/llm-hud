@@ -27,6 +27,7 @@ from llm_hud.storage import (
     resolve_file_target,
     restore_provider_state,
     validate_state_path,
+    validate_text_snapshot,
 )
 
 
@@ -473,7 +474,14 @@ class ClaudeProvider(Provider):
         if current != installed:
             if _matches_original(settings, state):
                 try:
+                    validate_text_snapshot(
+                        settings_path,
+                        expected_target=settings_target,
+                        expected_content=settings_snapshot,
+                    )
                     state_path.unlink(missing_ok=True)
+                except ContentChangedError as error:
+                    return Result(self.id, "conflict", str(error))
                 except OSError as error:
                     return Result(self.id, "error", str(error))
                 return Result(
