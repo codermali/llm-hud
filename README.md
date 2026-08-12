@@ -183,6 +183,11 @@ python3.12 bin/llm-hud providers
 测试使用临时的 HOME、配置和状态路径，不会修改本机真实的 Claude Code 或 Codex CLI
 配置。
 
+状态栏热路径有基准脚本 `scripts/bench_render.py`（用法见脚本注释）。2026-08 在
+Apple Silicon/APFS 上的基准：每 tick 约 38ms，其中运行时完整性摘要约 1.7ms、
+解释器启动约 7.5ms，其余为模块导入。据此暂不为降低摘要开销修改冻结的稳定协议；
+如在真实环境测得明显更差的数据，先重跑该脚本再评估。
+
 ## 发布
 
 维护者先更新 `src/llm_hud/_version.py`，再把同版本的 `vX.Y.Z` 标签推送到 GitHub。
