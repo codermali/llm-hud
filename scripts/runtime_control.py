@@ -9,7 +9,7 @@ to work when the active runtime cannot be imported or has been corrupted.
 from __future__ import annotations
 
 import ast
-import fcntl
+import errno
 import hashlib
 import importlib
 import json
@@ -23,6 +23,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 from typing import Sequence
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 
 INSTALL_MARKER = ".llm-hud-install-root"
@@ -44,6 +49,29 @@ VERSION = re.compile(
     r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
     r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\Z"
 )
+
+
+def _try_lock_descriptor(descriptor: int) -> None:
+    if os.name == "nt":
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        except OSError as error:
+            if error.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK) or getattr(
+                error, "winerror", None
+            ) in (33, 36):
+                raise BlockingIOError(error.errno, str(error)) from error
+            raise
+        return
+    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock_descriptor(descriptor: int) -> None:
+    if os.name == "nt":
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        return
+    fcntl.flock(descriptor, fcntl.LOCK_UN)
 
 
 class ControlError(ValueError):
@@ -395,7 +423,7 @@ class RuntimeLock:
         deadline = time.monotonic() + max(0.0, self.timeout)
         while True:
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _try_lock_descriptor(descriptor)
                 self._descriptor = descriptor
                 return self
             except BlockingIOError:
@@ -416,7 +444,7 @@ class RuntimeLock:
         del exc_type, exc_value, traceback
         if self._descriptor is not None:
             try:
-                fcntl.flock(self._descriptor, fcntl.LOCK_UN)
+                _unlock_descriptor(self._descriptor)
             finally:
                 os.close(self._descriptor)
                 self._descriptor = None

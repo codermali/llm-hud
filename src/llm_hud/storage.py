@@ -7,6 +7,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from llm_hud._platform import set_descriptor_mode
+
 
 class StateFileError(ValueError):
     """An installation state file is present but unsafe to use."""
@@ -192,7 +194,7 @@ def atomic_write_text(
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(content)
-            os.fchmod(handle.fileno(), target_mode)
+            set_descriptor_mode(handle.fileno(), target_mode)
             handle.flush()
             os.fsync(handle.fileno())
         if not follow_symlinks:

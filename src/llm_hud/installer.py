@@ -13,6 +13,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from llm_hud._platform import set_descriptor_mode
 from llm_hud.runtime import (
     ACTIVATION_NAME,
     INSTALL_MARKER_NAME,
@@ -268,7 +269,7 @@ def _write_launcher_file(launcher: Path, content: bytes) -> None:
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(content)
-            os.fchmod(handle.fileno(), 0o755)
+            set_descriptor_mode(handle.fileno(), 0o755)
             handle.flush()
             os.fsync(handle.fileno())
         try:
@@ -507,7 +508,7 @@ def _copy_regular_file(source: Path, destination: Path) -> None:
             raise RuntimeLayoutError(f"runtime source is not a regular file: {source}")
         executable = bool(opened.st_mode & 0o111)
         destination_descriptor = os.open(destination, destination_flags, 0o600)
-        os.fchmod(destination_descriptor, 0o700 if executable else 0o600)
+        set_descriptor_mode(destination_descriptor, 0o700 if executable else 0o600)
         while True:
             chunk = os.read(source_descriptor, 1024 * 1024)
             if not chunk:

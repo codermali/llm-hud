@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import fcntl
 import hashlib
 import json
 import os
@@ -14,6 +13,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any
 
+from llm_hud._platform import try_lock_descriptor, unlock_descriptor
 from llm_hud.storage import atomic_write_json, atomic_write_text, fsync_directory
 
 
@@ -507,6 +507,18 @@ def _fsync_regular_file(path: Path) -> None:
 
 
 def _fsync_directory_required(path: Path) -> None:
+    if os.name == "nt":
+        try:
+            metadata = path.lstat()
+        except OSError as error:
+            raise RuntimeLayoutError(
+                f"cannot inspect runtime directory for sync {path}: {error}"
+            ) from error
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise RuntimeLayoutError(f"runtime path is not a directory: {path}")
+        # Windows does not expose a portable directory handle that os.fsync()
+        # accepts. Runtime files are still flushed before each atomic rename.
+        return
     flags = (
         os.O_RDONLY
         | getattr(os, "O_DIRECTORY", 0)
@@ -799,7 +811,7 @@ class RuntimeLock:
         deadline = time.monotonic() + max(0.0, self.timeout)
         while True:
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                try_lock_descriptor(descriptor)
                 self._descriptor = descriptor
                 return self
             except BlockingIOError:
@@ -822,7 +834,7 @@ class RuntimeLock:
         del exc_type, exc_value, traceback
         if self._descriptor is not None:
             try:
-                fcntl.flock(self._descriptor, fcntl.LOCK_UN)
+                unlock_descriptor(self._descriptor)
             finally:
                 os.close(self._descriptor)
                 self._descriptor = None
