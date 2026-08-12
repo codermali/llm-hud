@@ -267,7 +267,11 @@ def _snapshot_regular_file(
     if maximum_size is not None and metadata.st_size > maximum_size:
         raise RuntimeLayoutError(f"{description} is too large: {path}")
 
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
     descriptor = -1
     try:
         descriptor = os.open(path, flags)

@@ -1308,7 +1308,7 @@ class RuntimeInstallerTests(unittest.TestCase):
             control = root / installer_module.CONTROL_DESTINATION
             dispatcher = root / installer_module.DISPATCHER_DESTINATION
             stable_state = root / installer_module.STABLE_STATE_NAME
-            stable_state.write_text('{"schema": 1}\n')
+            stable_state.write_bytes(b'{"schema": 1}\r\n')
             stable_state.chmod(0o640)
             before = {
                 path: (path.read_bytes(), path.stat().st_mode & 0o777)
@@ -1426,8 +1426,8 @@ class RuntimeInstallerTests(unittest.TestCase):
             copy_runtime_checkout(source)
             shutil.copytree(ROOT / "scripts", source / "scripts")
             (source / "README.md").write_text("a distinct healthy release\n")
-            control.write_text("# stale control\n")
-            dispatcher.write_text("# stale dispatcher\n")
+            control.write_bytes(b"# stale control\r\n")
+            dispatcher.write_bytes(b"# stale dispatcher\r\n")
             before = {
                 path: (path.read_bytes(), path.stat().st_mode & 0o777)
                 for path in (control, dispatcher)
