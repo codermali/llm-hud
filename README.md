@@ -46,17 +46,17 @@ gpt-5.6 xhigh · ~/projects/example · 5h 82% left · weekly 63% left · Context
 | macOS | ✅ 支持 | 主要开发平台；CI 含 macOS 安装冒烟测试 |
 | Linux | ✅ 支持 | CI 在 Ubuntu 上运行完整测试矩阵（Python 3.11–3.13） |
 | WSL | ✅ 支持 | 等同 Linux；llm-hud 必须与 CLI 工具装在 WSL 同一侧 |
-| 原生 Windows | ❌ 暂不支持 | 见下 |
+| 原生 Windows | ✅ 支持 | 需要 Git for Windows；CI 含原生测试和 Git Bash 安装冒烟测试 |
 
-原生 Windows（不经 WSL）暂不支持，原因有三：安装脚本是 POSIX shell；运行时锁
-使用 `fcntl.flock`（Unix 专属，Windows 上无法导入）；启动器是 `#!/bin/sh` 脚本。
-HUD 渲染核心本身是纯标准库 Python、可移植——若未来支持原生 Windows，预计走
-pip/pipx 安装路线（放弃版本化运行时与回退），而非移植现有安装器。有真实需求
-欢迎提 issue。
+原生 Windows 不需要 WSL，但安装、更新和 `llm-hud` 管理命令目前必须在 Git Bash
+中运行；PowerShell/CMD 直装尚未提供。运行时和各 CLI 仍是原生 Windows 进程，现有
+版本化安装、原子切换和 `rollback` 都会保留。Git Bash 也符合上游行为：Claude Code
+在 Windows 上优先用它运行状态栏命令，Kimi Code 目前同样要求 Git for Windows。
 
 ## 安装
 
-需要 Python 3.11 或更高版本。
+需要 Python 3.11 或更高版本。原生 Windows 还需要安装 Git for Windows，并在
+Git Bash 中执行本节命令；不要在 PowerShell 或 CMD 中直接运行 `install.sh`。
 
 下面的命令会安装最新的 GitHub Release，使用的安装脚本与该 Release 一同发布、
 互相配套：
@@ -82,7 +82,8 @@ curl -fsSL https://github.com/codermali/llm-hud/releases/latest/download/install
 - 只配置已检测到且需要配置的工具；
 - 将恢复配置所需的状态保存到 `~/.config/llm-hud`。
 
-Python 的检测顺序为 `python3.13`、`python3.12`、`python3.11`、`python3`。
+Python 的检测顺序为 `python3.13`、`python3.12`、`python3.11`、`python3`、
+`python`（最后一项主要用于 Windows）。
 如需指定解释器：
 
 ```bash
@@ -148,7 +149,8 @@ Claude Code 将状态栏 JSON 传给 `llm-hud render claude`。LLM HUD 从中读
 工作目录和当前 `rate_limits` 窗口，宽度取自 Claude Code 设置的 `COLUMNS` 环境
 变量。如果原来已有自定义状态栏，LLM HUD 会保留其输出（包括 `refreshInterval`
 等字段），并在卸载时恢复原配置。设置了 `CLAUDE_CONFIG_DIR` 时，LLM HUD 也会在
-该目录中查找 `settings.json`。
+该目录中查找 `settings.json`。在 Windows 上，写入 Claude 配置的启动器路径使用
+正斜杠；保留的原状态栏也继续交给 Git Bash 执行。
 
 ### Codex CLI
 
@@ -183,6 +185,7 @@ LLM HUD 当前保留 Kimi CLI 自带的底部工具栏。原因是外部状态�
 install.sh                    一键安装入口
 scripts/runtime_control.py    独立于当前版本的启动与回退控制
 src/llm_hud/
+├── _platform.py              Windows/POSIX 文件锁和权限差异
 ├── cli.py                    命令行入口
 ├── hud.py                    通用 HUD 数据模型和渲染器
 ├── installer.py              安装、更新和启动器管理
@@ -208,7 +211,8 @@ python3.12 bin/llm-hud providers
 ```
 
 测试使用临时的 HOME、配置和状态路径，不会修改本机真实的 Claude Code 或 Codex CLI
-配置。
+配置。CI 另在原生 Windows Python 上覆盖平台无关逻辑和运行时并发锁，并通过 Git
+Bash 完成安装、`doctor` 与卸载烟测。
 
 状态栏热路径有基准脚本 `scripts/bench_render.py`（用法见脚本注释）。2026-08 在
 Apple Silicon/APFS 上的基准：每 tick 约 38ms，其中运行时完整性摘要约 1.7ms、
