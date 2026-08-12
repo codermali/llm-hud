@@ -19,9 +19,9 @@ from __future__ import annotations
 
 import json
 import re
-import tomllib
 from dataclasses import dataclass
 
+from llm_hud import _tomllib as tomllib
 
 TABLE_RE = re.compile(r"^\s*\[([^\]]+)\]\s*(?:#.*)?$")
 ARRAY_TABLE_RE = re.compile(r"^\s*\[\[([^\]]+)\]\]\s*(?:#.*)?$")

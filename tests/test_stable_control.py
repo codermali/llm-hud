@@ -119,6 +119,10 @@ class StableDispatcherTests(unittest.TestCase):
             source_digest(PREVIOUS_RUNTIME_FIXTURE), marker["content_sha256"]
         )
 
+    @unittest.skipUnless(
+        sys.version_info >= (3, 11),
+        "the frozen v0.2.0 runtime requires Python 3.11 or newer",
+    )
     def test_current_control_dispatches_and_rolls_back_to_v0_2_0_runtime(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "runtime"

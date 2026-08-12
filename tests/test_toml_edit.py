@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import tomllib
 import unittest
 
+from llm_hud import _tomllib as tomllib
 from llm_hud.toml_edit import remove_key, set_array
 
 

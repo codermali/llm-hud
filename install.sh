@@ -55,9 +55,9 @@ reject_line_break PATH "$PATH"
 reject_line_break installer-path "$0"
 
 find_python() {
-  for candidate in python3.13 python3.12 python3.11 python3 python; do
+  for candidate in python3.13 python3.12 python3.11 python3.10 python3.9 python3 python; do
     if command -v "$candidate" >/dev/null 2>&1 &&
-      "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' 2>/dev/null; then
+      "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 9))' 2>/dev/null; then
       command -v "$candidate"
       return 0
     fi
@@ -102,8 +102,8 @@ pin_release_assets() {
 
 python_bin=${LLM_HUD_PYTHON:-$(find_python || true)}
 if [ -z "$python_bin" ]; then
-  printf '%s\n' "llm-hud requires Python 3.11 or newer, and none was found on PATH." >&2
-  printf '%s\n' "Set LLM_HUD_PYTHON=/path/to/python3.11 and run the installer again." >&2
+  printf '%s\n' "llm-hud requires Python 3.9 or newer, and none was found on PATH." >&2
+  printf '%s\n' "Set LLM_HUD_PYTHON=/path/to/python3.9 and run the installer again." >&2
   exit 1
 fi
 # Resolve to an absolute path so the launcher does not depend on the caller's
@@ -124,8 +124,8 @@ case "$python_bin" in
     python_bin="$python_dir/$python_name"
     ;;
 esac
-if ! "$python_bin" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' 2>/dev/null; then
-  printf '%s\n' "llm-hud requires Python 3.11 or newer: $python_bin is too old." >&2
+if ! "$python_bin" -c 'import sys; raise SystemExit(sys.version_info < (3, 9))' 2>/dev/null; then
+  printf '%s\n' "llm-hud requires Python 3.9 or newer: $python_bin is too old." >&2
   exit 1
 fi
 reject_line_break resolved-python "$python_bin"
@@ -177,8 +177,11 @@ if (
     or any(character not in "0123456789abcdef" for character in matches[0])
 ):
     raise SystemExit("llm-hud: invalid SHA256SUMS")
+digest = hashlib.sha256()
 with archive_path.open("rb") as archive_file:
-    actual = hashlib.file_digest(archive_file, "sha256").hexdigest()
+    for chunk in iter(lambda: archive_file.read(1024 * 1024), b""):
+        digest.update(chunk)
+actual = digest.hexdigest()
 if actual != matches[0]:
     raise SystemExit(
         "llm-hud: release archive checksum mismatch "

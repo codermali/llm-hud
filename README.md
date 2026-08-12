@@ -43,8 +43,8 @@ gpt-5.6 xhigh · ~/projects/example · 5h 82% left · weekly 63% left · Context
 
 | 平台 | 状态 | 说明 |
 | --- | --- | --- |
-| macOS | ✅ 支持 | 主要开发平台；CI 含 macOS 安装冒烟测试 |
-| Linux | ✅ 支持 | CI 在 Ubuntu 上运行完整测试矩阵（Python 3.11–3.13） |
+| macOS | ✅ 支持 | 主要开发平台；CI 覆盖 Python 3.9 安装和当前 Python 运行时 |
+| Linux | ✅ 支持 | CI 在 Ubuntu 上覆盖最低版本、关键边界和较新 Python 版本 |
 | WSL | ✅ 支持 | 等同 Linux；llm-hud 必须与 CLI 工具装在 WSL 同一侧 |
 | 原生 Windows | ✅ 支持 | 需要 Git for Windows；安装和管理命令在 Git Bash 中运行 |
 
@@ -56,7 +56,7 @@ Windows。
 
 ## 安装
 
-需要 Python 3.11 或更高版本。原生 Windows 还需要安装 Git for Windows，并在 Git
+需要 Python 3.9 或更高版本。原生 Windows 还需要安装 Git for Windows，并在 Git
 Bash 中执行本节命令；不要在 PowerShell 或 CMD 中直接运行 `install.sh`。
 
 下面的命令会安装最新的 GitHub Release，使用的安装脚本与该 Release 一同发布、
@@ -83,12 +83,12 @@ curl -fsSL https://github.com/codermali/llm-hud/releases/latest/download/install
 - 只配置已检测到且需要配置的工具；
 - 将恢复配置所需的状态保存到 `~/.config/llm-hud`。
 
-Python 的检测顺序为 `python3.13`、`python3.12`、`python3.11`、`python3`、
-`python`（最后一项主要用于 Windows）。
+Python 的检测顺序为 `python3.13`、`python3.12`、`python3.11`、`python3.10`、
+`python3.9`、`python3`、`python`（最后一项主要用于 Windows）。
 如需指定解释器：
 
 ```bash
-LLM_HUD_PYTHON=/path/to/python3.11 ./install.sh
+LLM_HUD_PYTHON=/path/to/python3.9 ./install.sh
 ```
 
 还可以使用以下环境变量：
@@ -203,19 +203,19 @@ src/llm_hud/
 
 ## 开发与测试
 
-开发同样需要 Python 3.11 或更高版本。macOS 自带的 `python3` 可能较旧，建议明确
-指定可用版本：
+开发同样需要 Python 3.9 或更高版本。建议明确指定可用版本：
 
 ```bash
-python3.12 -m unittest discover -s tests -t . -v
-python3.12 -m pip install 'ruff==0.16.*'
-python3.12 -m ruff check --no-cache src tests scripts
+python3.9 -m unittest discover -s tests -t . -v
+python3.9 -m pip install 'ruff==0.16.*'
+python3.9 -m ruff check --no-cache src tests scripts
 sh -n install.sh
-python3.12 bin/llm-hud providers
+python3.9 bin/llm-hud providers
 ```
 
 测试使用临时的 HOME、配置和状态路径，不会修改本机真实的 Claude Code 或 Codex CLI
-配置。GitHub Actions 另在原生 Windows Python 3.11–3.13 上覆盖平台无关逻辑、安装
+配置。GitHub Actions 在 Linux、macOS 和原生 Windows 上覆盖 Python 3.9
+最低版本、关键边界和较新 Python 版本，并在 Windows 上覆盖安装
 失败恢复和运行时并发锁，并通过 Git Bash 完成安装、升级、`rollback`、`doctor` 与
 卸载烟测。
 

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 from typing import Any
 
+from llm_hud import _tomllib as tomllib
 from llm_hud.paths import (
     codex_config_path,
     provider_journal_path,

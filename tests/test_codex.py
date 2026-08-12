@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 import tempfile
-import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from llm_hud import _tomllib as tomllib
 import llm_hud.providers.codex as codex_module
 from llm_hud.providers.codex import CodexProvider, HUD_ITEMS
 from llm_hud.toml_edit import set_array

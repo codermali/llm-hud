@@ -92,9 +92,9 @@ def _load_control(path: Path, source: str) -> ModuleType:
 
 
 def main() -> int:
-    if sys.version_info < (3, 11):
+    if sys.version_info < (3, 9):
         raise DispatcherError(
-            "llm-hud requires Python 3.11 or newer; re-run install.sh with "
+            "llm-hud requires Python 3.9 or newer; re-run install.sh with "
             "LLM_HUD_PYTHON set to a supported interpreter"
         )
     dispatcher = Path(os.path.abspath(__file__))

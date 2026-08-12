@@ -20,6 +20,27 @@ MARKER = ".llm-hud-install-root"
 LAYOUT = ".llm-hud-layout"
 
 
+def find_exact_python(major: int, minor: int) -> str | None:
+    candidates = [sys.executable, shutil.which(f"python{major}.{minor}")]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        result = subprocess.run(
+            [
+                candidate,
+                "-c",
+                "import sys; raise SystemExit(sys.version_info[:2] != ("
+                f"{major}, {minor}))",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if result.returncode == 0:
+            return candidate
+    return None
+
+
 def make_source_archive(archive: Path) -> None:
     with tarfile.open(archive, "w:gz") as bundle:
         for path in sorted(ROOT.rglob("*")):
@@ -86,6 +107,54 @@ def run_installer(
 
 
 class InstallerRootSafetyTests(unittest.TestCase):
+    def test_python_3_9_can_verify_and_install_a_release_archive(self):
+        python = find_exact_python(3, 9)
+        if python is None:
+            self.skipTest("Python 3.9 is not installed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "llm-hud.tar.gz"
+            make_source_archive(archive)
+            checksum = root / "SHA256SUMS"
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            checksum.write_text(f"{digest}  llm-hud.tar.gz\n")
+            install_dir = root / "runtime"
+            environment = installer_environment(
+                root,
+                install_dir,
+                overrides={
+                    "LLM_HUD_PYTHON": python,
+                    "LLM_HUD_TARBALL_URL": archive.as_uri(),
+                    "LLM_HUD_CHECKSUM_URL": checksum.as_uri(),
+                },
+            )
+
+            result = subprocess.run(
+                ["sh"],
+                input=INSTALLER.read_text(),
+                cwd=root,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            launcher = root / "launcher-bin" / "llm-hud"
+            launched = subprocess.run(
+                [str(launcher), "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            self.assertEqual(launched.returncode, 0, launched.stderr)
+            self.assertEqual(launched.stdout.strip(), f"llm-hud {__version__}")
+
     def test_stdin_bootstrap_downloads_and_installs_a_versioned_runtime(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
