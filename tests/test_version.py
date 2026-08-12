@@ -45,6 +45,19 @@ class VersionMetadataTests(unittest.TestCase):
                 project["classifiers"],
             )
 
+    def test_build_metadata_uses_pep_639_license_fields(self):
+        metadata = tomllib.loads((ROOT / "pyproject.toml").read_text())
+        project = metadata["project"]
+        self.assertEqual(metadata["build-system"]["requires"], ["setuptools>=77.0.3"])
+        self.assertEqual(project["license"], "MIT")
+        self.assertEqual(
+            project["license-files"],
+            ["LICENSE", "src/llm_hud/_vendor/tomli/LICENSE"],
+        )
+        self.assertFalse(
+            any(classifier.startswith("License ::") for classifier in project["classifiers"])
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
