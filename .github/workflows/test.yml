@@ -85,6 +85,9 @@ jobs:
           tests.test_installer_module.RuntimeInstallerTests.test_failed_trash_rename_keeps_the_original_runtime_valid
           tests.test_installer_module.RuntimeInstallerTests.test_same_release_reinstall_repairs_a_corrupt_active_runtime
           tests.test_installer_module.RuntimeInstallerTests.test_repair_quarantine_sharing_failure_keeps_active_runtime_named
+          tests.test_installer_module.RuntimeInstallerTests.test_repair_rollback_sync_failure_still_restores_active_directory
+          tests.test_installer_module.RuntimeInstallerTests.test_interrupted_repair_backup_survives_the_next_failed_install
+          tests.test_installer_module.RuntimeInstallerTests.test_completed_repair_makes_an_interrupted_backup_discardable
           tests.test_installer_module.RuntimeInstallerTests.test_first_install_removes_its_launcher_when_pointer_write_fails
           tests.test_installer_module.RuntimeInstallerTests.test_post_activation_failure_restores_the_activation_actually_replaced
           tests.test_installer_module.RuntimeInstallerTests.test_post_activation_failure_holds_the_lock_against_an_aba_update
