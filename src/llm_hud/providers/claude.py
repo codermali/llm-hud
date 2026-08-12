@@ -27,6 +27,9 @@ from llm_hud.storage import (
 )
 
 
+# State ABI: rollback switches only the runtime, never provider state, so a
+# release must keep reading every schema the previous release wrote.  Bump the
+# written schema only together with tests/test_state_abi.py.
 STATE_SCHEMAS = frozenset((1, 2))
 _CONFLICT_MESSAGE = (
     "statusLine was customized after installation; left it untouched "

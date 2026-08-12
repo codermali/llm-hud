@@ -189,6 +189,11 @@ python3.12 bin/llm-hud providers
 Release 工作流会核对标签与代码版本、运行测试，并发布 `llm-hud.tar.gz` 和
 `SHA256SUMS`。创建标签和正式发布仍由维护者主动决定。
 
+提供方状态文件带有 schema 版本号。`rollback` 只切换运行时、不迁移状态，因此每个
+版本都必须能读取上一个发布版本写出的 schema；写出的 schema 由
+`tests/test_state_abi.py` 钉住，升级 schema 必须同步修改该测试并保留旧 schema 的
+读取能力。
+
 ## 许可证
 
 本项目使用 [MIT License](LICENSE)。

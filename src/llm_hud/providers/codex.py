@@ -31,6 +31,9 @@ HUD_ITEMS = [
 ]
 # Previously-managed items that installs must scrub from status_line; none now.
 OBSOLETE_ITEMS: list[str] = []
+# State ABI: rollback switches only the runtime, never provider state, so a
+# release must keep reading every schema the previous release wrote.  Bump the
+# written schema only together with tests/test_state_abi.py.
 STATE_SCHEMAS = frozenset((1,))
 _CONFLICT_MESSAGE = (
     "status_line was customized after installation; left it untouched "
