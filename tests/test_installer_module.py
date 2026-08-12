@@ -15,8 +15,6 @@ import llm_hud.installer as installer_module
 from llm_hud._version import __version__
 from llm_hud.installer import (
     STAGING_PREFIX,
-    STABLE_V1_CONTROL_SHA256,
-    STABLE_V1_DISPATCHER_SHA256,
     claim_install_root,
     install_checkout_launcher,
     install_complete,
@@ -51,73 +49,6 @@ def copy_runtime_checkout(destination: Path) -> None:
 
 
 class RuntimeInstallerTests(unittest.TestCase):
-    def test_stable_protocol_v1_bytes_are_frozen(self):
-        tools = installer_module.load_stable_tools(ROOT)
-
-        self.assertEqual(tools.dispatcher_sha256, STABLE_V1_DISPATCHER_SHA256)
-        self.assertEqual(tools.control_sha256, STABLE_V1_CONTROL_SHA256)
-        current = installer_module.STABLE_PROTOCOLS[
-            installer_module.CURRENT_STABLE_PROTOCOL
-        ]
-        self.assertEqual(tools.dispatcher_sha256, current.dispatcher_sha256)
-        self.assertEqual(tools.control_sha256, current.control_sha256)
-
-    def test_registered_older_stable_protocol_is_migrated(self):
-        old_dispatcher = "#!/bin/sh\nexec echo old protocol\n"
-        old_control = "raise SystemExit('old control')\n"
-        old = installer_module.StableProtocol(
-            dispatcher_sha256=hashlib.sha256(
-                old_dispatcher.encode("utf-8")
-            ).hexdigest(),
-            control_sha256=hashlib.sha256(old_control.encode("utf-8")).hexdigest(),
-        )
-        tools = installer_module.load_stable_tools(ROOT)
-        for label, dispatcher_content in (
-            ("clean", old_dispatcher),
-            # A crash mid-migration may have replaced only one file already.
-            ("mid-migration", tools.dispatcher),
-        ):
-            with self.subTest(label=label):
-                with tempfile.TemporaryDirectory() as directory:
-                    root = Path(directory) / "runtime"
-                    root.mkdir()
-                    owned_root(root)
-                    initialize_layout(root)
-                    (root / "bin").mkdir()
-                    (root / "control").mkdir()
-                    dispatcher_path = root / "bin" / "llm-hud"
-                    dispatcher_path.write_text(dispatcher_content)
-                    dispatcher_path.chmod(0o700)
-                    (root / "control" / "runtime_control.py").write_text(old_control)
-                    (root / ".llm-hud-stable.json").write_text(
-                        json.dumps(
-                            {
-                                "schema": 1,
-                                "dispatcher_sha256": old.dispatcher_sha256,
-                                "control_sha256": old.control_sha256,
-                            }
-                        )
-                    )
-
-                    with mock.patch.dict(
-                        installer_module.STABLE_PROTOCOLS, {0: old}
-                    ):
-                        metadata, _ = install_versioned_runtime(ROOT, root)
-
-                    self.assertEqual(
-                        dispatcher_path.read_text(), tools.dispatcher
-                    )
-                    self.assertEqual(
-                        (root / "control" / "runtime_control.py").read_text(),
-                        tools.control,
-                    )
-                    state = json.loads((root / ".llm-hud-stable.json").read_text())
-                    self.assertEqual(
-                        state["dispatcher_sha256"], tools.dispatcher_sha256
-                    )
-                    self.assertEqual(state["control_sha256"], tools.control_sha256)
-                    validate_runtime(root, metadata.release_id)
-
     def test_prune_removes_only_unreferenced_releases(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "runtime"
@@ -204,7 +135,7 @@ class RuntimeInstallerTests(unittest.TestCase):
                             ):
                                 claim_install_root(root)
 
-    def test_unregistered_stable_protocol_is_refused(self):
+    def test_stable_tools_are_refreshed_and_stale_state_removed(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "runtime"
             root.mkdir()
@@ -212,12 +143,13 @@ class RuntimeInstallerTests(unittest.TestCase):
             initialize_layout(root)
             (root / "bin").mkdir()
             (root / "control").mkdir()
-            foreign = "#!/bin/sh\nexec echo foreign\n"
+            stale = "#!/bin/sh\nexec echo previous release\n"
             dispatcher_path = root / "bin" / "llm-hud"
-            dispatcher_path.write_text(foreign)
+            dispatcher_path.write_text(stale)
             dispatcher_path.chmod(0o700)
-            (root / "control" / "runtime_control.py").write_text(foreign)
-            digest = hashlib.sha256(foreign.encode("utf-8")).hexdigest()
+            (root / "control" / "runtime_control.py").write_text(stale)
+            (root / "control" / ".runtime_control.py.interrupted").write_text("tmp")
+            digest = hashlib.sha256(stale.encode("utf-8")).hexdigest()
             (root / ".llm-hud-stable.json").write_text(
                 json.dumps(
                     {
@@ -228,12 +160,19 @@ class RuntimeInstallerTests(unittest.TestCase):
                 )
             )
 
-            with self.assertRaisesRegex(
-                RuntimeLayoutError, "unsupported protocol"
-            ):
-                install_versioned_runtime(ROOT, root)
+            metadata, _ = install_versioned_runtime(ROOT, root)
 
-            self.assertEqual(dispatcher_path.read_text(), foreign)
+            tools = installer_module.load_stable_tools(ROOT)
+            self.assertEqual(dispatcher_path.read_text(), tools.dispatcher)
+            self.assertEqual(
+                (root / "control" / "runtime_control.py").read_text(),
+                tools.control,
+            )
+            self.assertFalse((root / ".llm-hud-stable.json").exists())
+            self.assertFalse(
+                (root / "control" / ".runtime_control.py.interrupted").exists()
+            )
+            validate_runtime(root, metadata.release_id)
 
     def test_claim_refuses_a_nonempty_unmanaged_root(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -563,7 +502,6 @@ class RuntimeInstallerTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertEqual(completed.stdout.strip(), f"llm-hud {__version__}")
             self.assertFalse(sentinel.exists())
-            self.assertTrue((root / ".llm-hud-stable.json").is_file())
 
     def test_partial_stable_v1_install_is_repaired_from_frozen_sources(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -580,40 +518,16 @@ class RuntimeInstallerTests(unittest.TestCase):
             current = read_activation(root)
             assert current is not None
             self.assertEqual(current.active, metadata.release_id)
+            tools = installer_module.load_stable_tools(ROOT)
             self.assertEqual(
                 hashlib.sha256((root / "bin" / "llm-hud").read_bytes()).hexdigest(),
-                STABLE_V1_DISPATCHER_SHA256,
+                tools.dispatcher_sha256,
             )
-            self.assertTrue((root / ".llm-hud-stable.json").is_file())
+            self.assertFalse((root / ".llm-hud-stable.json").exists())
 
-    def test_interrupted_stable_temp_is_recovered_only_when_recognized(self):
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            tools = installer_module.load_stable_tools(ROOT)
-            for label, content, succeeds in (
-                ("recognized", tools.control[:200], True),
-                ("foreign", "user data", False),
-            ):
-                with self.subTest(label=label):
-                    root = base / label
-                    root.mkdir()
-                    owned_root(root)
-                    initialize_layout(root)
-                    (root / "control").mkdir()
-                    orphan = root / "control" / ".runtime_control.py.interrupted"
-                    orphan.write_text(content)
-
-                    if succeeds:
-                        install_versioned_runtime(ROOT, root)
-                        self.assertFalse(orphan.exists())
-                        self.assertTrue((root / ".llm-hud-stable.json").exists())
-                    else:
-                        with self.assertRaisesRegex(RuntimeLayoutError, "unrecognized"):
-                            install_versioned_runtime(ROOT, root)
-                        self.assertEqual(orphan.read_text(), "user data")
-                        self.assertFalse((root / "activation").exists())
-
-    def test_foreign_root_dispatcher_is_rejected_before_activation(self):
+    def test_foreign_root_dispatcher_is_replaced_inside_an_owned_root(self):
+        # The ownership marker claims the whole root: whatever sits at
+        # bin/llm-hud inside it is managed content and gets refreshed.
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "runtime"
             (root / "bin").mkdir(parents=True)
@@ -621,12 +535,11 @@ class RuntimeInstallerTests(unittest.TestCase):
             foreign = root / "bin" / "llm-hud"
             foreign.write_text("user command")
 
-            with self.assertRaisesRegex(RuntimeLayoutError, "unmanaged"):
-                install_versioned_runtime(ROOT, root)
+            install_versioned_runtime(ROOT, root)
 
-            self.assertEqual(foreign.read_text(), "user command")
-            self.assertFalse((root / "activation").exists())
-            self.assertFalse((root / ".llm-hud-layout").exists())
+            tools = installer_module.load_stable_tools(ROOT)
+            self.assertEqual(foreign.read_text(), tools.dispatcher)
+            self.assertIsNotNone(read_activation(root))
 
     def test_stable_tools_cas_does_not_overwrite_a_newer_activation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -655,7 +568,7 @@ class RuntimeInstallerTests(unittest.TestCase):
             assert current is not None
             self.assertEqual(current.active, second.release_id)
 
-    def test_modified_stable_control_is_not_overwritten_on_reinstall(self):
+    def test_modified_stable_control_is_refreshed_on_reinstall(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "runtime"
             root.mkdir()
@@ -663,15 +576,13 @@ class RuntimeInstallerTests(unittest.TestCase):
             install_versioned_runtime(ROOT, root)
             control = root / "control" / "runtime_control.py"
             control.write_text("user modification")
-            activation_before = (root / "activation").read_bytes()
 
-            with self.assertRaisesRegex(RuntimeLayoutError, "was modified"):
-                install_versioned_runtime(ROOT, root)
+            install_versioned_runtime(ROOT, root)
 
-            self.assertEqual(control.read_text(), "user modification")
-            self.assertEqual((root / "activation").read_bytes(), activation_before)
+            tools = installer_module.load_stable_tools(ROOT)
+            self.assertEqual(control.read_text(), tools.control)
 
-    def test_changed_stable_protocol_is_rejected_before_activation(self):
+    def test_changed_control_source_ships_with_the_next_install(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             root = base / "runtime"
@@ -684,13 +595,23 @@ class RuntimeInstallerTests(unittest.TestCase):
             copy_runtime_checkout(source)
             shutil.copytree(ROOT / "scripts", source / "scripts")
             with (source / "scripts" / "runtime_control.py").open("a") as handle:
-                handle.write("\n# an unversioned protocol change\n")
-            activation_before = (root / "activation").read_bytes()
+                handle.write("\n# a control layer change\n")
 
-            with self.assertRaisesRegex(RuntimeLayoutError, "protocol v1"):
-                install_complete(source, root, launcher, Path(sys.executable))
+            install_complete(source, root, launcher, Path(sys.executable))
 
-            self.assertEqual((root / "activation").read_bytes(), activation_before)
+            self.assertIn(
+                "# a control layer change",
+                (root / "control" / "runtime_control.py").read_text(),
+            )
+            completed = subprocess.run(
+                [str(launcher), "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_symlinked_stable_directory_is_rejected_before_activation(self):
         with tempfile.TemporaryDirectory() as directory:

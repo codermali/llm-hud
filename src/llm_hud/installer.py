@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import os
 import shlex
 import shutil
@@ -42,54 +41,14 @@ STAGING_PREFIX = ".llm-hud-stage-"
 # Staging directories younger than this may belong to a live concurrent
 # install; older ones were orphaned by a crash and are safe to remove.
 STAGING_MAX_AGE_SECONDS = 3600.0
-STABLE_STATE_SCHEMA = 1
 LAUNCHER_STATE_SCHEMA = 1
 DISPATCHER_SOURCE = Path("scripts") / "llm-hud-dispatcher"
 CONTROL_SOURCE = Path("scripts") / "runtime_control.py"
 CONTROL_DESTINATION = Path("control") / "runtime_control.py"
 DISPATCHER_DESTINATION = Path("bin") / "llm-hud"
-_SHA256 = frozenset("0123456789abcdef")
 MANAGED_LAUNCHER_MARKER = "# llm-hud-managed-launcher-v1"
 MAX_LAUNCHER_SIZE = 64 * 1024
 LAUNCHER_TEMP_PREFIX = ".llm-hud-launcher-"
-STABLE_V1_DISPATCHER_SHA256 = (
-    "79157470c26c620581cf69d701434e2ff2c0d6fd21744e8731b6eec99c7c7a2a"
-)
-STABLE_V1_CONTROL_SHA256 = (
-    "77ed3c4ad64577040f3984c814cd803ba9d706134fd2807bff760ff2e3633040"
-)
-
-
-@dataclass(frozen=True)
-class StableProtocol:
-    """One frozen revision of the stable dispatcher and control pair."""
-
-    dispatcher_sha256: str
-    control_sha256: str
-
-
-# Every stable protocol revision ever shipped, oldest first.  Changing the
-# stable tools means freezing their new hashes here as the next revision;
-# installs recorded under any older revision migrate by file replacement,
-# while unknown hashes (a newer llm-hud, or tampering) are refused.  Every
-# revision must keep the dispatcher-facing interface: control.run(root, argv)
-# and control.ControlError.
-STABLE_PROTOCOLS: dict[int, StableProtocol] = {
-    1: StableProtocol(
-        dispatcher_sha256=STABLE_V1_DISPATCHER_SHA256,
-        control_sha256=STABLE_V1_CONTROL_SHA256,
-    ),
-}
-CURRENT_STABLE_PROTOCOL = 1
-
-
-def _protocol_for_state(state: dict[str, object]) -> int | None:
-    """The registered protocol revision a stable state file records."""
-    pair = (state["dispatcher_sha256"], state["control_sha256"])
-    for number, protocol in STABLE_PROTOCOLS.items():
-        if pair == (protocol.dispatcher_sha256, protocol.control_sha256):
-            return number
-    return None
 
 
 @dataclass(frozen=True)
@@ -364,16 +323,6 @@ def load_stable_tools(source: Path) -> StableTools:
         dispatcher_sha256=_sha256(dispatcher.encode("utf-8")),
         control_sha256=_sha256(control.encode("utf-8")),
     )
-    current = STABLE_PROTOCOLS[CURRENT_STABLE_PROTOCOL]
-    if (
-        tools.dispatcher_sha256 != current.dispatcher_sha256
-        or tools.control_sha256 != current.control_sha256
-    ):
-        raise RuntimeLayoutError(
-            "stable tool sources do not match stable protocol "
-            f"v{CURRENT_STABLE_PROTOCOL}; freeze the changed sources as the "
-            "next revision in STABLE_PROTOCOLS"
-        )
     for description, text in (
         ("stable dispatcher", tools.dispatcher),
         ("stable runtime control", tools.control),
@@ -383,42 +332,6 @@ def load_stable_tools(source: Path) -> StableTools:
         except (SyntaxError, ValueError) as error:
             raise RuntimeLayoutError(f"invalid {description}: {error}") from error
     return tools
-
-
-def _valid_sha256(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and not (set(value) - _SHA256)
-    )
-
-
-def _read_stable_state(path: Path) -> dict[str, object] | None:
-    try:
-        path.lstat()
-    except FileNotFoundError:
-        return None
-    except OSError as error:
-        raise RuntimeLayoutError(
-            f"cannot inspect stable tools state {path}: {error}"
-        ) from error
-    raw = _read_regular_bytes(path, "stable tools state")
-    try:
-        payload = json.loads(raw)
-    except (UnicodeError, json.JSONDecodeError) as error:
-        raise RuntimeLayoutError(f"invalid stable tools state {path}: {error}") from error
-    expected = {"schema", "dispatcher_sha256", "control_sha256"}
-    schema = payload.get("schema") if isinstance(payload, dict) else None
-    if (
-        not isinstance(payload, dict)
-        or set(payload) != expected
-        or isinstance(schema, bool)
-        or schema != STABLE_STATE_SCHEMA
-        or not _valid_sha256(payload.get("dispatcher_sha256"))
-        or not _valid_sha256(payload.get("control_sha256"))
-    ):
-        raise RuntimeLayoutError(f"unsupported stable tools state: {path}")
-    return payload
 
 
 def _existing_file_sha256(path: Path, description: str) -> str | None:
@@ -446,173 +359,31 @@ def _require_regular_directory(path: Path, description: str) -> None:
         raise RuntimeLayoutError(f"{description} is not a regular directory: {path}")
 
 
-def _preflight_stable_directories(root: Path) -> None:
-    for relative, description in (
-        (Path("bin"), "stable bin directory"),
-        (Path("control"), "stable control directory"),
-    ):
-        path = root / relative
-        try:
-            metadata = path.lstat()
-        except FileNotFoundError:
-            continue
-        except OSError as error:
-            raise RuntimeLayoutError(f"cannot inspect {description} {path}: {error}") from error
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-            raise RuntimeLayoutError(f"{description} is not a regular directory: {path}")
-
-
-def _handle_stable_tool_temps(
-    root: Path,
-    tools: StableTools,
-    *,
-    recover: bool,
-) -> dict[Path, set[str]]:
-    ignored: dict[Path, set[str]] = {}
-    for directory, prefix, expected, description in (
-        (
-            root / CONTROL_DESTINATION.parent,
-            f".{CONTROL_DESTINATION.name}.",
-            tools.control.encode("utf-8"),
-            "stable runtime control",
-        ),
-        (
-            root / DISPATCHER_DESTINATION.parent,
-            f".{DISPATCHER_DESTINATION.name}.",
-            tools.dispatcher.encode("utf-8"),
-            "stable dispatcher",
-        ),
-    ):
-        try:
-            entries = list(os.scandir(directory))
-        except FileNotFoundError:
-            continue
-        except OSError as error:
-            raise RuntimeLayoutError(
-                f"cannot inspect {description} directory {directory}: {error}"
-            ) from error
-        changed = False
-        for entry in entries:
-            if not entry.name.startswith(prefix):
-                continue
-            path = Path(entry.path)
-            try:
-                metadata = path.lstat()
-            except OSError as error:
-                raise RuntimeLayoutError(
-                    f"cannot inspect interrupted {description} file {path}: {error}"
-                ) from error
-            if metadata.st_size > len(expected):
-                raise RuntimeLayoutError(
-                    f"refusing unrecognized interrupted {description} file: {path}"
-                )
-            try:
-                content = _read_regular_bytes(path, f"interrupted {description}")
-            except RuntimeLayoutError as error:
-                raise RuntimeLayoutError(
-                    f"refusing unsafe interrupted {description} file: {path}"
-                ) from error
-            if not expected.startswith(content):
-                raise RuntimeLayoutError(
-                    f"refusing unrecognized interrupted {description} file: {path}"
-                )
-            if recover:
-                try:
-                    path.unlink()
-                except OSError as error:
-                    raise RuntimeLayoutError(
-                        f"cannot recover interrupted {description} file {path}: {error}"
-                    ) from error
-                changed = True
-            else:
-                ignored.setdefault(directory, set()).add(entry.name)
-        if changed:
-            fsync_directory(directory)
-    return ignored
-
-
-def _preflight_stable_tools(
-    root: Path,
-    tools: StableTools,
-    *,
-    recover_temps: bool = False,
-) -> None:
-    _preflight_stable_directories(root)
-    ignored = _handle_stable_tool_temps(
-        root,
-        tools,
-        recover=recover_temps,
-    )
-    state = _read_stable_state(root / STABLE_STATE_NAME)
-    dispatcher_path = root / DISPATCHER_DESTINATION
-    control_path = root / CONTROL_DESTINATION
-    dispatcher_hash = _existing_file_sha256(
-        dispatcher_path, "installed stable dispatcher"
-    )
-    control_hash = _existing_file_sha256(
-        control_path, "installed stable runtime control"
-    )
-    if state is None:
-        allowed_dispatchers: set[str | None] = {None, tools.dispatcher_sha256}
-        if dispatcher_hash not in allowed_dispatchers:
-            raise RuntimeLayoutError(
-                f"refusing to replace unmanaged stable dispatcher: {dispatcher_path}"
-            )
-        if control_hash not in (None, tools.control_sha256):
-            raise RuntimeLayoutError(
-                f"refusing to replace unmanaged stable runtime control: {control_path}"
-            )
-        control_directory = root / CONTROL_DESTINATION.parent
-        try:
-            entries = {entry.name for entry in control_directory.iterdir()}
-        except FileNotFoundError:
-            entries = set()
-        except OSError as error:
-            raise RuntimeLayoutError(
-                f"cannot inspect stable control directory {control_directory}: {error}"
-            ) from error
-        if entries - {CONTROL_DESTINATION.name} - ignored.get(control_directory, set()):
-            raise RuntimeLayoutError(
-                f"refusing non-empty unmanaged stable control directory: {control_directory}"
-            )
+def _sweep_tool_temps(directory: Path, name: str) -> None:
+    """Remove write temporaries orphaned by an interrupted install."""
+    try:
+        entries = list(os.scandir(directory))
+    except OSError:
         return
-
-    installed_protocol = _protocol_for_state(state)
-    if installed_protocol is None:
-        raise RuntimeLayoutError(
-            "installed stable tools use an unsupported protocol (possibly "
-            "written by a newer llm-hud); rerun the newest installer"
-        )
-    recorded = STABLE_PROTOCOLS[installed_protocol]
-    current = STABLE_PROTOCOLS[CURRENT_STABLE_PROTOCOL]
-    # A crash mid-migration can leave either revision on disk; accept both so
-    # the installer can finish replacing them with the current protocol.
-    allowed_dispatchers = {recorded.dispatcher_sha256, current.dispatcher_sha256}
-    allowed_controls = {recorded.control_sha256, current.control_sha256}
-    if dispatcher_hash is not None and dispatcher_hash not in allowed_dispatchers:
-        raise RuntimeLayoutError(
-            f"installed stable dispatcher was modified: {dispatcher_path}"
-        )
-    if control_hash is not None and control_hash not in allowed_controls:
-        raise RuntimeLayoutError(
-            f"installed stable runtime control was modified: {control_path}"
-        )
+    for entry in entries:
+        if entry.name.startswith(f".{name}."):
+            try:
+                Path(entry.path).unlink()
+            except OSError:
+                pass
 
 
 def _install_stable_tools_unlocked(
     root: Path,
     tools: StableTools,
 ) -> None:
-    _preflight_stable_tools(
-        root,
-        tools,
-        recover_temps=True,
-    )
     _require_regular_directory(root / "bin", "stable bin directory")
     _require_regular_directory(root / "control", "stable control directory")
     try:
         control_path = root / CONTROL_DESTINATION
         dispatcher_path = root / DISPATCHER_DESTINATION
+        _sweep_tool_temps(control_path.parent, CONTROL_DESTINATION.name)
+        _sweep_tool_temps(dispatcher_path.parent, DISPATCHER_DESTINATION.name)
         if _existing_file_sha256(control_path, "installed stable runtime control") \
             != tools.control_sha256:
             atomic_write_text(
@@ -629,15 +400,9 @@ def _install_stable_tools_unlocked(
                 mode=0o700,
                 follow_symlinks=False,
             )
-        atomic_write_json(
-            root / STABLE_STATE_NAME,
-            {
-                "schema": STABLE_STATE_SCHEMA,
-                "dispatcher_sha256": tools.dispatcher_sha256,
-                "control_sha256": tools.control_sha256,
-            },
-            follow_symlinks=False,
-        )
+        # 0.1.x recorded the frozen protocol hashes here; the tools are now
+        # simply refreshed with every install.
+        (root / STABLE_STATE_NAME).unlink(missing_ok=True)
     except OSError as error:
         raise RuntimeLayoutError(f"cannot install stable runtime tools: {error}") from error
 
@@ -651,7 +416,6 @@ def install_stable_tools(
     source = Path(source)
     root = Path(root).resolve(strict=True)
     tools = load_stable_tools(source)
-    _preflight_stable_tools(root, tools)
     with RuntimeLock(root):
         current = read_activation(root)
         actual_active = current.active if current is not None else None
@@ -959,14 +723,7 @@ def _smoke_test_runtime_candidate(
         )
 
 
-def _validate_frozen_control(control: str) -> str:
-    current = STABLE_PROTOCOLS[CURRENT_STABLE_PROTOCOL]
-    if _sha256(control.encode("utf-8")) != current.control_sha256:
-        raise RuntimeLayoutError(
-            "stable runtime control does not match stable protocol "
-            f"v{CURRENT_STABLE_PROTOCOL}; freeze the changed source as the "
-            "next revision in STABLE_PROTOCOLS"
-        )
+def _validate_control_source(control: str) -> str:
     try:
         compile(control, "stable runtime control", "exec", dont_inherit=True)
     except (SyntaxError, ValueError) as error:
@@ -974,9 +731,9 @@ def _validate_frozen_control(control: str) -> str:
     return control
 
 
-def _default_frozen_control() -> str:
+def _default_control_source() -> str:
     source_root = Path(__file__).resolve().parents[2]
-    return _validate_frozen_control(
+    return _validate_control_source(
         _decode_stable_source(
             source_root / CONTROL_SOURCE,
             "stable runtime control source",
@@ -991,7 +748,7 @@ def _preflight_runtime_release(
     version: str,
     control: str,
 ) -> None:
-    control = _validate_frozen_control(control)
+    control = _validate_control_source(control)
     try:
         completed = subprocess.run(
             [
@@ -1032,9 +789,9 @@ def install_runtime_from_source(
     root = Path(root)
     python = Path(sys.executable) if python is None else Path(python)
     if stable_control is None:
-        stable_control = _default_frozen_control()
+        stable_control = _default_control_source()
     else:
-        stable_control = _validate_frozen_control(stable_control)
+        stable_control = _validate_control_source(stable_control)
     source_metadata = _metadata(source, "runtime source root")
     if stat.S_ISLNK(source_metadata.st_mode) or not stat.S_ISDIR(
         source_metadata.st_mode
@@ -1109,7 +866,6 @@ def install_versioned_runtime(
     source = Path(source)
     root = Path(root)
     tools = load_stable_tools(source)
-    _preflight_stable_tools(root, tools)
     activation_before = _read_existing_activation(root)
     metadata, activation = install_runtime_from_source(
         source,
