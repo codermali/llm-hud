@@ -49,12 +49,7 @@ curl -fsSL https://github.com/codermali/llm-hud/releases/latest/download/install
 ```
 
 仓库 main 分支上的 `install.sh`（raw.githubusercontent.com 地址）同样可用，
-但它可能领先于最新 Release；v0.1.0 的 Release 尚未附带安装脚本，在下一个
-Release 发布前请使用 main 分支脚本：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/codermali/llm-hud/main/install.sh | sh
-```
+但它可能领先于最新 Release。
 
 也可以从本地源码目录安装：
 
