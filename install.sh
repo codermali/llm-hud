@@ -218,6 +218,72 @@ import sys
 sys.path.insert(0, sys.argv.pop(1))
 runpy.run_module("llm_hud.installer", run_name="__main__")'
 
+# Ask on /dev/tty because stdin is the script itself under curl | sh; without
+# a terminal (CI, automation) continue so reinstalls stay non-interactive.
+confirm_or_keep() {
+  if (exec < /dev/tty) 2>/dev/null; then
+    printf '%s [y/N] ' "$1" > /dev/tty
+    IFS= read -r reinstall_answer < /dev/tty || reinstall_answer=""
+    case "$reinstall_answer" in
+      y|Y|yes|YES) ;;
+      *)
+        printf '%s\n' "Keeping the existing installation."
+        exit 0
+        ;;
+    esac
+  else
+    printf '%s\n' "$1 (no terminal; continuing)"
+  fi
+}
+
+source_version=$(
+  "$python_bin" -I -B -c \
+    'import runpy, sys; print(runpy.run_path(sys.argv[1])["__version__"])' \
+    "$source_root/src/llm_hud/_version.py" 2>/dev/null
+) || source_version=""
+installed_version=""
+if [ -x "$launcher_path" ]; then
+  installed_version=$("$launcher_path" --version 2>/dev/null | sed 's/^llm-hud //') || installed_version=""
+fi
+if [ -n "$installed_version" ] && [ -n "$source_version" ]; then
+  relation=$(
+    "$python_bin" -I -B -c '
+import sys
+
+def core(value):
+    parts = value.split("+")[0].split("-")[0].split(".")
+    try:
+        return [int(part) for part in parts]
+    except ValueError:
+        return None
+
+installed, source = sys.argv[1], sys.argv[2]
+if installed == source:
+    print("same")
+else:
+    a, b = core(installed), core(source)
+    if a is None or b is None or a == b:
+        print("same")
+    elif a < b:
+        print("upgrade")
+    else:
+        print("downgrade")
+' "$installed_version" "$source_version" 2>/dev/null
+  ) || relation=""
+  case "$relation" in
+    same)
+      confirm_or_keep "llm-hud $installed_version is already installed. Reinstall?"
+      ;;
+    upgrade)
+      printf 'Detected llm-hud %s; upgrading to %s (the previous runtime stays available via llm-hud rollback).\n' \
+        "$installed_version" "$source_version"
+      ;;
+    downgrade)
+      confirm_or_keep "Installed llm-hud $installed_version is newer than $source_version. Downgrade?"
+      ;;
+  esac
+fi
+
 # Root safety (ownership marker, dangerous or non-empty directories) is the
 # Python installer's job; the shell only decides checkout vs managed install.
 if [ "$source_root" != "$install_root" ]; then

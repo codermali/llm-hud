@@ -312,6 +312,57 @@ class InstallerRootSafetyTests(unittest.TestCase):
             self.assertIn("non-empty unmanaged install root", result.stderr)
             self.assertEqual(sentinel.read_text(), "keep")
 
+    def test_same_version_reinstall_notes_and_continues_without_a_tty(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            install_dir = root / "runtime"
+            install_dir.mkdir()
+            first = run_installer(root, install_dir)
+            self.assertEqual(first.returncode, 0, first.stderr)
+
+            repeated = run_installer(root, install_dir)
+
+            self.assertEqual(repeated.returncode, 0, repeated.stderr)
+            self.assertIn("is already installed", repeated.stdout)
+            self.assertIn("no terminal; continuing", repeated.stdout)
+
+    def test_older_version_upgrades_with_a_notice(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            install_dir = root / "runtime"
+            install_dir.mkdir()
+            first = run_installer(root, install_dir)
+            self.assertEqual(first.returncode, 0, first.stderr)
+
+            newer_source = root / "newer-source"
+            for name in ("src", "bin", "scripts"):
+                shutil.copytree(ROOT / name, newer_source / name)
+            for name in ("README.md", "LICENSE", "pyproject.toml", "install.sh"):
+                shutil.copy2(ROOT / name, newer_source / name)
+            (newer_source / "src" / "llm_hud" / "_version.py").write_text(
+                '__version__ = "9.9.9"\n'
+            )
+
+            upgraded = run_installer(
+                root,
+                install_dir,
+                cwd=newer_source,
+                installer=newer_source / "install.sh",
+            )
+
+            self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+            self.assertIn("upgrading to 9.9.9", upgraded.stdout)
+            launcher = root / "launcher-bin" / "llm-hud"
+            version = subprocess.run(
+                [str(launcher), "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            self.assertEqual(version.stdout.strip(), "llm-hud 9.9.9")
+
     def test_refuses_a_flat_legacy_installation(self):
         # Flat 0.1.0 layouts are no longer adopted: the directory is simply
         # a non-empty unmanaged root and must be cleared and reinstalled.
