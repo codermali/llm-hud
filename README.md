@@ -46,17 +46,21 @@ gpt-5.6 xhigh · ~/projects/example · 5h 82% left · weekly 63% left · Context
 | macOS | ✅ 支持 | 主要开发平台；CI 含 macOS 安装冒烟测试 |
 | Linux | ✅ 支持 | CI 在 Ubuntu 上运行完整测试矩阵（Python 3.11–3.13） |
 | WSL | ✅ 支持 | 等同 Linux；llm-hud 必须与 CLI 工具装在 WSL 同一侧 |
-| 原生 Windows | ✅ 支持 | 需要 Git for Windows；CI 含原生测试和 Git Bash 安装冒烟测试 |
+| 原生 Windows | 🧪 main 已适配 | 需要 Git for Windows；尚未包含在最新的 v0.2.0 Release 中 |
 
-原生 Windows 不需要 WSL，但安装、更新和 `llm-hud` 管理命令目前必须在 Git Bash
-中运行；PowerShell/CMD 直装尚未提供。运行时和各 CLI 仍是原生 Windows 进程，现有
-版本化安装、原子切换和 `rollback` 都会保留。Git Bash 也符合上游行为：Claude Code
-在 Windows 上优先用它运行状态栏命令，Kimi Code 目前同样要求 Git for Windows。
+原生 Windows 适配已经进入 `main`，但最新的 v0.2.0 Release 尚不包含这些改动；在下
+一个 Release 发布前，不应把下方的 latest-release 命令视为 Windows 安装入口。Windows
+适配本身不需要 WSL，但安装、更新和 `llm-hud` 管理命令目前必须在 Git Bash 中运行；
+PowerShell/CMD 直装尚未提供。运行时和各 CLI 仍是原生 Windows 进程，现有版本化安
+装、原子切换和 `rollback` 都会保留。Git Bash 也符合上游行为：Claude Code 在
+Windows 上优先用它运行状态栏命令，Kimi Code 目前同样要求 Git for Windows。
 
 ## 安装
 
-需要 Python 3.11 或更高版本。原生 Windows 还需要安装 Git for Windows，并在
-Git Bash 中执行本节命令；不要在 PowerShell 或 CMD 中直接运行 `install.sh`。
+需要 Python 3.11 或更高版本。原生 Windows 还需要安装 Git for Windows；正式安装请
+等待包含 Windows 适配的下一个 Release，并在 Git Bash 中执行本节命令，不要在
+PowerShell 或 CMD 中直接运行 `install.sh`。需要验证 `main` 的开发者可以克隆仓库后
+在 Git Bash 中运行 `./install.sh`。
 
 下面的命令会安装最新的 GitHub Release，使用的安装脚本与该 Release 一同发布、
 互相配套：
