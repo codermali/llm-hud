@@ -150,6 +150,14 @@ def _configured_status_line(
     return configured
 
 
+def _status_line_command(command_path: str) -> str:
+    # Claude runs status-line commands through Git Bash on Windows. Forward
+    # slashes avoid Git Bash interpreting an unquoted backslash as an escape.
+    if os.name == "nt":
+        command_path = command_path.replace("\\", "/")
+    return shlex.join((command_path, "render", "claude"))
+
+
 def _installed_status_line_from_state(state: object) -> dict[str, Any] | None:
     if not isinstance(state, dict):
         return None
@@ -264,10 +272,18 @@ def _delegate_output(raw: bytes, state: dict[str, Any]) -> str:
     command = original.get("command")
     if not isinstance(command, str) or not command or _is_llm_hud_command(command):
         return ""
+    delegated_command: str | list[str] = command
+    use_shell = True
+    if os.name == "nt":
+        bash = shutil.which("bash")
+        if bash is None:
+            return ""
+        delegated_command = [bash, "-c", command]
+        use_shell = False
     try:
         completed = subprocess.run(
-            command,
-            shell=True,
+            delegated_command,
+            shell=use_shell,
             input=raw,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -321,7 +337,7 @@ class ClaudeProvider(Provider):
         except (OSError, json.JSONDecodeError, ValueError) as error:
             return Result(self.id, "error", str(error))
 
-        installed_command = shlex.join((command_path, "render", "claude"))
+        installed_command = _status_line_command(command_path)
         try:
             _recover_interrupted(state_path, journal_path, settings)
             existing_state = read_provider_state(

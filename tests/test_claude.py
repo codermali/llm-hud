@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import llm_hud.providers.claude as claude_module
 from llm_hud.providers.claude import ClaudeProvider, _is_llm_hud_command, render
 from tests.support import Environment
 
@@ -191,6 +192,60 @@ class ClaudeProviderTests(unittest.TestCase):
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertEqual(completed.stdout, "quoted")
+
+    def test_windows_status_line_command_uses_git_bash_paths(self):
+        with mock.patch.object(claude_module.os, "name", "nt"):
+            command = claude_module._status_line_command(
+                r"C:\Users\A User\bin\llm-hud"
+            )
+
+        self.assertEqual(command, "'C:/Users/A User/bin/llm-hud' render claude")
+
+    def test_windows_delegation_runs_the_original_command_in_git_bash(self):
+        completed = mock.Mock(stdout=b"existing\r\n")
+        state = {
+            "original_status_line": {
+                "type": "command",
+                "command": "printf existing",
+            }
+        }
+        bash = r"C:\Program Files\Git\bin\bash.exe"
+        with (
+            mock.patch.object(claude_module.os, "name", "nt"),
+            mock.patch.object(claude_module.shutil, "which", return_value=bash),
+            mock.patch.object(
+                claude_module.subprocess, "run", return_value=completed
+            ) as run,
+        ):
+            output = claude_module._delegate_output(b"{}", state)
+
+        self.assertEqual(output, "existing")
+        run.assert_called_once_with(
+            [bash, "-c", "printf existing"],
+            shell=False,
+            input=b"{}",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+
+    def test_windows_delegation_fails_softly_without_git_bash(self):
+        state = {
+            "original_status_line": {
+                "type": "command",
+                "command": "printf existing",
+            }
+        }
+        with (
+            mock.patch.object(claude_module.os, "name", "nt"),
+            mock.patch.object(claude_module.shutil, "which", return_value=None),
+            mock.patch.object(claude_module.subprocess, "run") as run,
+        ):
+            output = claude_module._delegate_output(b"{}", state)
+
+        self.assertEqual(output, "")
+        run.assert_not_called()
 
     def test_uninstall_does_not_replace_later_user_change(self):
         with tempfile.TemporaryDirectory() as directory:

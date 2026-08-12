@@ -28,8 +28,7 @@ def claude_settings_path() -> Path:
     override = os.environ.get("LLM_HUD_CLAUDE_SETTINGS")
     if override:
         return Path(override).expanduser()
-    # CLAUDE_CONFIG_DIR is honored by Claude Code itself but is not in its
-    # documented variable list; treat it as best-effort compatibility.
+    # Claude Code documents CLAUDE_CONFIG_DIR as its configuration root.
     config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
     if config_dir:
         return Path(config_dir).expanduser() / "settings.json"
