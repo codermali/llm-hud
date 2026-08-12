@@ -70,7 +70,13 @@ def _compact_path(value: str | None) -> str | None:
     if not value:
         return None
     path_value = os.path.expanduser(value)
-    home_value = str(home_dir())
+    # Keep an explicit override in the caller's path syntax. Converting it to
+    # the host's concrete Path first would turn `/home/...` into `\home\...`
+    # on Windows before the pure-path comparison below.
+    home_override = os.environ.get("LLM_HUD_HOME")
+    home_value = (
+        os.path.expanduser(home_override) if home_override else str(home_dir())
+    )
 
     # cwd is upstream data, so its syntax need not match the host running the HUD
     # (tests, remote sessions, and WSL can all cross that boundary). Pure paths let

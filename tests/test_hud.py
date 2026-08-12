@@ -23,11 +23,14 @@ class HudTests(unittest.TestCase):
                 "5h  ████████░░   76% used    7d  ██████░░░░   59% used",
             )
 
-    def test_explicit_home_does_not_query_the_system_home(self):
+    def test_explicit_home_does_not_use_host_path_semantics(self):
         snapshot = HudSnapshot(provider="Claude", cwd="/explicit/home/project")
         with (
             Environment(LLM_HUD_HOME="/explicit/home"),
-            mock.patch("llm_hud.paths.Path.home", side_effect=RuntimeError("no home")),
+            mock.patch(
+                "llm_hud.hud.home_dir",
+                side_effect=AssertionError("explicit home must retain its syntax"),
+            ),
         ):
             self.assertEqual(render_hud(snapshot, color=False), "Claude · ~/project")
 
