@@ -15,12 +15,16 @@ from llm_hud.runtime import (
     ACTIVATION_NAME,
     INSTALL_MARKER_NAME,
     INSTALL_MARKER_VALUE,
+    MAX_MANAGED_TEXT_SIZE,
+    RUNTIME_MARKER_NAME,
     Activation,
+    RuntimeLayoutError,
     activate,
     finalize_runtime,
     initialize_layout,
     read_activation,
     runtime_path,
+    validate_runtime,
 )
 
 
@@ -245,6 +249,58 @@ class StableDispatcherTests(unittest.TestCase):
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("install marker", result.stderr)
+
+
+class RuntimeValidatorParityTests(unittest.TestCase):
+    def test_package_and_stable_control_apply_the_same_marker_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            install_stable_control(root)
+            release_id = create_runtime(root, "current", "1.0.0")
+            control = load_installed_control(root)
+            marker = runtime_path(root, release_id) / RUNTIME_MARKER_NAME
+            canonical = marker.read_bytes()
+            maximum_size = canonical + b" " * (
+                MAX_MANAGED_TEXT_SIZE - len(canonical)
+            )
+
+            def altered(**updates: object) -> bytes:
+                payload = json.loads(canonical)
+                payload.update(updates)
+                return (json.dumps(payload, sort_keys=True) + "\n").encode()
+
+            fixtures = (
+                ("canonical", canonical, True),
+                ("maximum-size", maximum_size, True),
+                ("too-large", maximum_size + b" ", False),
+                ("malformed-json", b"{\n", False),
+                ("boolean-schema", altered(schema=True), False),
+                ("unexpected-field", altered(unexpected=True), False),
+                ("invalid-release", altered(release_id="../escape"), False),
+                ("invalid-version", altered(version="latest"), False),
+                ("invalid-digest", altered(content_sha256="A" * 64), False),
+            )
+
+            self.assertEqual(control.MAX_MANAGED_TEXT_SIZE, MAX_MANAGED_TEXT_SIZE)
+            for label, content, expected in fixtures:
+                with self.subTest(label=label):
+                    marker.write_bytes(content)
+                    try:
+                        validate_runtime(root, release_id)
+                    except RuntimeLayoutError:
+                        package_accepts = False
+                    else:
+                        package_accepts = True
+                    try:
+                        control._validate_runtime(root, release_id)
+                    except control.ControlError:
+                        stable_control_accepts = False
+                    else:
+                        stable_control_accepts = True
+
+                    self.assertEqual(package_accepts, expected)
+                    self.assertEqual(stable_control_accepts, expected)
 
 
 class StableRollbackTests(unittest.TestCase):

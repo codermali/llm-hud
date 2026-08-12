@@ -37,6 +37,7 @@ _VERSION = re.compile(
     r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\Z"
 )
 RUNTIME_CONTENT = ("src", "bin", "README.md", "LICENSE", "pyproject.toml")
+MAX_MANAGED_TEXT_SIZE = 64 * 1024
 _UNSET = object()
 
 
@@ -120,12 +121,26 @@ def _read_owned_text(path: Path, description: str) -> str | None:
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         raise RuntimeLayoutError(f"{description} is not a regular managed file: {path}")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = -1
     try:
         descriptor = os.open(path, flags)
-        with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
-            return handle.read()
+        chunks: list[bytes] = []
+        remaining = MAX_MANAGED_TEXT_SIZE + 1
+        while remaining:
+            chunk = os.read(descriptor, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(chunks)
+        if len(payload) > MAX_MANAGED_TEXT_SIZE:
+            raise RuntimeLayoutError(f"{description} is too large: {path}")
+        return payload.decode("utf-8")
     except (OSError, UnicodeError) as error:
         raise RuntimeLayoutError(f"cannot read {description} {path}: {error}") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 def _require_install_ownership(root: Path) -> None:
