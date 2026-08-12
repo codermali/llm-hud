@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import secrets
 import shlex
 import shutil
 import stat
@@ -33,6 +34,8 @@ from llm_hud.runtime import (
     read_activation,
     restore_activation,
     source_digest,
+    validate_release_id,
+    validate_runtime,
     validate_staged_runtime,
 )
 from llm_hud.storage import atomic_write_json, atomic_write_text, fsync_directory
@@ -42,6 +45,11 @@ STAGING_PREFIX = ".llm-hud-stage-"
 # Staging directories younger than this may belong to a live concurrent
 # install; older ones were orphaned by a crash and are safe to remove.
 STAGING_MAX_AGE_SECONDS = 3600.0
+RUNTIME_TRASH_PREFIX = ".llm-hud-trash-"
+RUNTIME_TRASH_RECORD_SUFFIX = ".record"
+RUNTIME_TRASH_PAYLOAD_SUFFIX = ".runtime"
+RUNTIME_TRASH_RECORD_VALUE = "llm-hud-runtime-trash-v1"
+RUNTIME_TRASH_TOKEN_BYTES = 16
 LAUNCHER_STATE_SCHEMA = 1
 DISPATCHER_SOURCE = Path("scripts") / "llm-hud-dispatcher"
 CONTROL_SOURCE = Path("scripts") / "runtime_control.py"
@@ -639,8 +647,203 @@ def _sweep_stale_staging(root: Path) -> None:
         fsync_directory(root)
 
 
+def _trash_paths(versions: Path, token: str) -> tuple[Path, Path]:
+    stem = f"{RUNTIME_TRASH_PREFIX}{token}"
+    return (
+        versions / f"{stem}{RUNTIME_TRASH_RECORD_SUFFIX}",
+        versions / f"{stem}{RUNTIME_TRASH_PAYLOAD_SUFFIX}",
+    )
+
+
+def _trash_token(name: str, suffix: str) -> str | None:
+    if not name.startswith(RUNTIME_TRASH_PREFIX) or not name.endswith(suffix):
+        return None
+    token = name[len(RUNTIME_TRASH_PREFIX) : -len(suffix)]
+    if len(token) != RUNTIME_TRASH_TOKEN_BYTES * 2:
+        return None
+    try:
+        bytes.fromhex(token)
+    except ValueError:
+        return None
+    return token
+
+
+def _trash_record_payload(release_id: str, token: str) -> str:
+    return f"{RUNTIME_TRASH_RECORD_VALUE} {token} {release_id}\n"
+
+
+def _same_directory(path: Path, identity: tuple[int, int]) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return (
+        not stat.S_ISLNK(metadata.st_mode)
+        and stat.S_ISDIR(metadata.st_mode)
+        and (metadata.st_dev, metadata.st_ino) == identity
+    )
+
+
+def _managed_trash_payload(
+    versions: Path, token: str
+) -> tuple[Path | None, tuple[int, int] | None] | None:
+    record, payload = _trash_paths(versions, token)
+    try:
+        raw = _read_regular_bytes(record, "runtime trash record").decode("utf-8")
+    except (OSError, RuntimeLayoutError, UnicodeError):
+        return None
+    parts = raw.removesuffix("\n").split(" ")
+    if (
+        len(parts) != 3
+        or parts[0] != RUNTIME_TRASH_RECORD_VALUE
+        or parts[1] != token
+        or raw != _trash_record_payload(parts[2], token)
+    ):
+        return None
+    try:
+        validate_release_id(parts[2])
+        metadata = payload.lstat()
+    except FileNotFoundError:
+        return None, None
+    except (OSError, RuntimeLayoutError):
+        return None
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        return None
+    return payload, (metadata.st_dev, metadata.st_ino)
+
+
+def _remove_managed_runtime_trash(versions: Path) -> None:
+    """Best-effort removal of trash proven to have been created by this installer."""
+    try:
+        entries = list(os.scandir(versions))
+    except OSError:
+        return
+    tokens = {
+        token
+        for entry in entries
+        if (token := _trash_token(entry.name, RUNTIME_TRASH_RECORD_SUFFIX))
+        is not None
+    }
+    changed = False
+    for token in tokens:
+        managed = _managed_trash_payload(versions, token)
+        if managed is None:
+            continue
+        payload, payload_identity = managed
+        record, _ = _trash_paths(versions, token)
+        if payload is None or payload_identity is None:
+            try:
+                record.unlink()
+            except OSError:
+                pass
+            else:
+                changed = True
+            continue
+        if not _same_directory(payload, payload_identity):
+            continue
+        try:
+            shutil.rmtree(payload)
+        except OSError:
+            try:
+                payload.lstat()
+            except FileNotFoundError:
+                try:
+                    record.unlink()
+                except OSError:
+                    pass
+                changed = True
+            except OSError:
+                pass
+            continue
+        try:
+            record.unlink()
+        except OSError:
+            # A missing record makes the empty trash name inert. Never delete
+            # an unmarked directory merely because its name resembles ours.
+            pass
+        changed = True
+    if changed:
+        fsync_directory(versions)
+
+
+def _move_runtime_to_trash(
+    versions: Path,
+    path: Path,
+    release_id: str,
+    *,
+    expected_identity: tuple[int, int],
+) -> None:
+    """Atomically free a release ID before its best-effort recursive removal."""
+    if not _same_directory(path, expected_identity):
+        return
+    for _ in range(8):
+        token = secrets.token_hex(RUNTIME_TRASH_TOKEN_BYTES)
+        record, payload = _trash_paths(versions, token)
+        try:
+            record.lstat()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return
+        else:
+            continue
+        try:
+            payload.lstat()
+        except FileNotFoundError:
+            break
+        except OSError:
+            return
+    else:
+        return
+    try:
+        atomic_write_text(
+            record,
+            _trash_record_payload(release_id, token),
+            mode=0o600,
+            follow_symlinks=False,
+        )
+    except OSError:
+        return
+    try:
+        os.rename(path, payload)
+    except OSError:
+        try:
+            record.unlink()
+        except OSError:
+            pass
+        return
+    fsync_directory(versions)
+    if not _same_directory(payload, expected_identity):
+        # The release name changed identity after validation. Never recurse
+        # into that replacement; make it inert by dropping our record.
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            try:
+                os.rename(payload, path)
+            except OSError:
+                pass
+        except OSError:
+            pass
+        try:
+            record.unlink()
+        except OSError:
+            pass
+        fsync_directory(versions)
+        return
+    try:
+        shutil.rmtree(payload)
+    except OSError:
+        return
+    try:
+        record.unlink()
+    except OSError:
+        pass
+    fsync_directory(versions)
+
+
 def _prune_inactive_runtimes(root: Path, *, lock_timeout: float = 10.0) -> None:
-    """Remove finalized releases no longer reachable as active or previous."""
+    """Move unreachable releases aside, then remove their trash best-effort."""
     with RuntimeLock(root, timeout=lock_timeout):
         activation = read_activation(root)
         if activation is None:
@@ -649,13 +852,17 @@ def _prune_inactive_runtimes(root: Path, *, lock_timeout: float = 10.0) -> None:
         if activation.previous is not None:
             keep.add(activation.previous)
         versions = root / VERSIONS_DIR_NAME
+        _remove_managed_runtime_trash(versions)
         try:
             entries = list(os.scandir(versions))
         except OSError:
             return
-        changed = False
         for entry in entries:
             if entry.name in keep:
+                continue
+            try:
+                release_id = validate_release_id(entry.name)
+            except RuntimeLayoutError:
                 continue
             path = Path(entry.path)
             try:
@@ -664,10 +871,16 @@ def _prune_inactive_runtimes(root: Path, *, lock_timeout: float = 10.0) -> None:
                 continue
             if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
                 continue
-            shutil.rmtree(path, ignore_errors=True)
-            changed = True
-        if changed:
-            fsync_directory(versions)
+            try:
+                validate_runtime(root, release_id)
+            except RuntimeLayoutError:
+                continue
+            _move_runtime_to_trash(
+                versions,
+                path,
+                release_id,
+                expected_identity=(metadata.st_dev, metadata.st_ino),
+            )
 
 
 def _smoke_test_runtime_candidate(
@@ -779,6 +992,11 @@ def _install_runtime_from_source(
     version = embedded_runtime_version(source)
     initialize_layout(root)
     _sweep_stale_staging(root)
+    try:
+        with RuntimeLock(root):
+            _remove_managed_runtime_trash(root / VERSIONS_DIR_NAME)
+    except RuntimeLayoutError:
+        pass  # trash collection is best effort and must not block an install
     try:
         root = root.resolve(strict=True)
         root_metadata = root.lstat()

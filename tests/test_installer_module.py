@@ -25,6 +25,7 @@ from llm_hud.installer import (
 from llm_hud.runtime import (
     INSTALL_MARKER_NAME,
     INSTALL_MARKER_VALUE,
+    VERSIONS_DIR_NAME,
     RuntimeLayoutError,
     activate,
     initialize_layout,
@@ -51,27 +52,113 @@ def copy_runtime_checkout(destination: Path) -> None:
 class RuntimeInstallerTests(unittest.TestCase):
     def test_prune_removes_only_unreferenced_releases(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "runtime"
+            base = Path(directory)
+            root = base / "runtime"
             root.mkdir()
             owned_root(root)
-            initialize_layout(root)
-            versions = root / "versions"
-            names = (
-                "0.1.0-aaaaaaaaaaaa",
-                "0.1.0-bbbbbbbbbbbb",
-                "0.1.0-cccccccccccc",
-            )
-            for name in names:
-                (versions / name).mkdir()
-            (root / "activation").write_text(
-                "llm-hud-activation-v1 0.1.0-bbbbbbbbbbbb 0.1.0-cccccccccccc\n"
-            )
+            releases = []
+            for index in range(3):
+                source = base / f"source-{index}"
+                source.mkdir()
+                copy_runtime_checkout(source)
+                with (source / "README.md").open("a") as handle:
+                    handle.write(f"\nprune fixture {index}\n")
+                metadata, _ = install_runtime_from_source(source, root)
+                releases.append(metadata.release_id)
+            versions = root / VERSIONS_DIR_NAME
+            foreign = versions / "0.1.0-dddddddddddd"
+            foreign.mkdir()
 
             installer_module._prune_inactive_runtimes(root)
 
             remaining = {path.name for path in versions.iterdir()}
-            self.assertEqual(
-                remaining, {"0.1.0-bbbbbbbbbbbb", "0.1.0-cccccccccccc"}
+            self.assertEqual(remaining, {releases[1], releases[2], foreign.name})
+
+    def test_failed_trash_removal_does_not_block_same_release_reinstall(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "runtime"
+            root.mkdir()
+            owned_root(root)
+            sources = []
+            releases = []
+            for index in range(3):
+                source = base / f"source-{index}"
+                source.mkdir()
+                copy_runtime_checkout(source)
+                with (source / "README.md").open("a") as handle:
+                    handle.write(f"\ntrash fixture {index}\n")
+                metadata, _ = install_runtime_from_source(source, root)
+                sources.append(source)
+                releases.append(metadata.release_id)
+
+            original_rmtree = shutil.rmtree
+
+            def fail_trash_removal(path, *args, **kwargs):
+                if str(path).endswith(installer_module.RUNTIME_TRASH_PAYLOAD_SUFFIX):
+                    raise OSError("simulated Windows sharing violation")
+                return original_rmtree(path, *args, **kwargs)
+
+            with mock.patch(
+                "llm_hud.installer.shutil.rmtree",
+                side_effect=fail_trash_removal,
+            ):
+                installer_module._prune_inactive_runtimes(root)
+
+            versions = root / VERSIONS_DIR_NAME
+            self.assertFalse((versions / releases[0]).exists())
+            self.assertTrue(
+                any(
+                    path.name.endswith(installer_module.RUNTIME_TRASH_PAYLOAD_SUFFIX)
+                    for path in versions.iterdir()
+                )
+            )
+
+            metadata, _ = install_runtime_from_source(sources[0], root)
+
+            self.assertEqual(metadata.release_id, releases[0])
+            self.assertEqual(validate_runtime(root, releases[0]), metadata)
+            self.assertFalse(
+                any(
+                    path.name.startswith(installer_module.RUNTIME_TRASH_PREFIX)
+                    for path in versions.iterdir()
+                )
+            )
+
+    def test_prune_does_not_delete_a_release_replaced_after_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            owned_root(root)
+            metadata, _ = install_runtime_from_source(ROOT, root)
+            versions = root / VERSIONS_DIR_NAME
+            target = versions / metadata.release_id
+            original = target.with_name(f"{target.name}-original")
+            (root / "activation").write_text(
+                "llm-hud-activation-v1 0.2.0-ffffffffffff -\n"
+            )
+            original_validate = installer_module.validate_runtime
+
+            def replace_after_validation(runtime_root: Path, release_id: str):
+                result = original_validate(runtime_root, release_id)
+                target.rename(original)
+                target.mkdir()
+                (target / "sentinel").write_text("replacement")
+                return result
+
+            with mock.patch(
+                "llm_hud.installer.validate_runtime",
+                side_effect=replace_after_validation,
+            ):
+                installer_module._prune_inactive_runtimes(root)
+
+            self.assertEqual((target / "sentinel").read_text(), "replacement")
+            self.assertTrue(original.is_dir())
+            self.assertFalse(
+                any(
+                    path.name.startswith(installer_module.RUNTIME_TRASH_PREFIX)
+                    for path in versions.iterdir()
+                )
             )
 
     def test_stale_staging_directories_are_swept_on_install(self):
