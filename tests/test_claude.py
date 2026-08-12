@@ -517,6 +517,66 @@ class ClaudeProviderTests(unittest.TestCase):
 
             self.assertEqual(output, "Claude · Opus")
 
+    def test_delegation_refuses_llm_hud_commands(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stub = root / "llm-hud"
+            stub.write_text("#!/bin/sh\necho RECURSION\n")
+            os.chmod(stub, 0o755)
+            settings = root / "settings.json"
+            command = "/opt/llm-hud render claude"
+            installed = {"type": "command", "command": command}
+            settings.write_text(json.dumps({"statusLine": installed}))
+            state_dir = root / "state" / "providers"
+            state_dir.mkdir(parents=True)
+            state = {
+                "schema": 2,
+                "settings_path": str(settings.resolve()),
+                "original_present": True,
+                "original_status_line": {
+                    "type": "command",
+                    "command": f"'{stub}' render claude",
+                },
+                "installed_command": command,
+                "installed_status_line": installed,
+            }
+            (state_dir / "claude.json").write_text(json.dumps(state))
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+                COLUMNS=None,
+            ):
+                output = render(b'{"model":{"display_name":"Opus"}}', color=False)
+
+            self.assertNotIn("RECURSION", output)
+            self.assertEqual(output, "Claude · Opus")
+
+    def test_claude_config_dir_locates_settings(self):
+        from llm_hud.paths import claude_settings_path
+
+        with tempfile.TemporaryDirectory() as directory:
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=None, CLAUDE_CONFIG_DIR=directory
+            ):
+                self.assertEqual(
+                    claude_settings_path(), Path(directory) / "settings.json"
+                )
+
+    def test_doctor_reports_an_interrupted_transaction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            providers_dir = root / "state" / "providers"
+            providers_dir.mkdir(parents=True)
+            (providers_dir / "claude.journal.json").write_text("{}")
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(root / "settings.json"),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                configured, detail = ClaudeProvider().configured()
+
+            self.assertFalse(configured)
+            self.assertIn("interrupted transaction journal", detail)
+
     def test_absent_rate_limit_data_renders_no_usage_row(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

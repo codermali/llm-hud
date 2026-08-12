@@ -276,6 +276,12 @@ class CodexProvider(Provider):
 
     def configured(self) -> tuple[bool, str]:
         path = codex_config_path()
+        journal_path = provider_journal_path(self.id)
+        if journal_path.is_file():
+            return False, (
+                f"interrupted transaction journal {journal_path}; "
+                "run llm-hud install or uninstall to recover it"
+            )
         try:
             _, parsed = _load_config()
             _, items = _status_line(parsed)

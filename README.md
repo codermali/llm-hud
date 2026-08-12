@@ -38,6 +38,7 @@ gpt-5.6 xhigh · ~/projects/example · 5h 82% left · weekly 63% left · Context
 
 ## 安装
 
+支持 macOS、Linux 和 WSL；原生 Windows 暂不支持（安装器依赖 POSIX 文件锁）。
 需要 Python 3.11 或更高版本。
 
 下面的命令会安装最新的 GitHub Release，使用的安装脚本与该 Release 一同发布、
@@ -129,8 +130,10 @@ llm-hud rollback
 ### Claude Code
 
 Claude Code 将状态栏 JSON 传给 `llm-hud render claude`。LLM HUD 从中读取模型、
-工作目录和当前 `rate_limits` 窗口。如果原来已有自定义状态栏，LLM HUD 会保留其
-输出，并在卸载时恢复原配置。
+工作目录和当前 `rate_limits` 窗口，宽度取自 Claude Code 设置的 `COLUMNS` 环境
+变量。如果原来已有自定义状态栏，LLM HUD 会保留其输出（包括 `refreshInterval`
+等字段），并在卸载时恢复原配置。设置了 `CLAUDE_CONFIG_DIR` 时，LLM HUD 也会在
+该目录中查找 `settings.json`。
 
 ### Codex CLI
 

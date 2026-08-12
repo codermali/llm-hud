@@ -462,6 +462,12 @@ class ClaudeProvider(Provider):
 
     def configured(self) -> tuple[bool, str]:
         path = claude_settings_path()
+        journal_path = provider_journal_path(self.id)
+        if journal_path.is_file():
+            return False, (
+                f"interrupted transaction journal {journal_path}; "
+                "run llm-hud install or uninstall to recover it"
+            )
         try:
             settings = _load_settings(path)
         except (OSError, json.JSONDecodeError, ValueError) as error:

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime
 
-from llm_hud.hud import HudSnapshot, UsageWindow, render_hud
+from llm_hud.hud import ANSI_RE, HudSnapshot, UsageWindow, render_hud
 from tests.support import Environment
 
 
@@ -47,6 +48,44 @@ class HudTests(unittest.TestCase):
             render_hud(snapshot, color=False).splitlines(),
             ["Claude", "5h  ████████░░   76% left", "7d  ██████░░░░   59% left"],
         )
+
+    def test_color_output_wraps_fields_in_balanced_ansi_codes(self):
+        snapshot = HudSnapshot(
+            provider="Claude",
+            model="Opus",
+            windows=(UsageWindow("5h", 76), UsageWindow("7d", 12)),
+        )
+        colored = render_hud(snapshot, color=True)
+        self.assertIn("\x1b[1;38;5;208mClaude\x1b[0m", colored)
+        self.assertIn("\x1b[32m", colored)  # >= 60% remaining is green
+        self.assertIn("\x1b[31m", colored)  # < 30% remaining is red
+        resets = colored.count("\x1b[0m")
+        self.assertEqual(colored.count("\x1b["), resets * 2)
+        # Stripping the codes yields exactly the uncolored rendering.
+        self.assertEqual(
+            ANSI_RE.sub("", colored), render_hud(snapshot, color=False)
+        )
+
+    def test_reset_times_render_per_window_format(self):
+        stamp = 1900000000.0
+        local = datetime.fromtimestamp(stamp).astimezone()
+        snapshot = HudSnapshot(
+            provider="Claude",
+            windows=(
+                UsageWindow("5h", 76, resets_at=stamp),
+                UsageWindow("7d", 59, resets_at=stamp),
+            ),
+        )
+        rendered = render_hud(snapshot, color=False)
+        self.assertIn(f"↻ {local.strftime('%H:%M')}", rendered)
+        self.assertIn(f"↻ {local.strftime('%a %H:%M')}", rendered)
+
+    def test_invalid_reset_timestamp_is_omitted(self):
+        snapshot = HudSnapshot(
+            provider="Claude",
+            windows=(UsageWindow("5h", 76, resets_at=1e300),),
+        )
+        self.assertNotIn("↻", render_hud(snapshot, color=False))
 
     def test_control_characters_are_stripped_from_upstream_fields(self):
         snapshot = HudSnapshot(
