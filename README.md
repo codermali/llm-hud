@@ -185,22 +185,27 @@ LLM HUD 当前保留 Kimi CLI 自带的底部工具栏。原因是外部状态�
 ## 项目结构
 
 ```text
-install.sh                    一键安装入口
-scripts/runtime_control.py    独立于当前版本的启动与回退控制
+install.sh                       一键安装入口
+bin/llm-hud                      源码树命令入口
+scripts/llm-hud-dispatcher       安装后固定的稳定分发器
+scripts/runtime_control.py       独立于当前版本的启动与回退控制
 src/llm_hud/
-├── _platform.py              Windows/POSIX 文件锁和权限差异
-├── cli.py                    命令行入口
-├── hud.py                    通用 HUD 数据模型和渲染器
-├── installer.py              安装、更新和启动器管理
-├── runtime.py                版本化运行时与原子切换
-├── paths.py                  配置和状态路径
-├── storage.py                原子文件与 JSON 操作
-├── toml_edit.py              保守修改 Codex TOML 配置
+├── _platform.py                 Windows/POSIX 文件锁和权限差异
+├── _tomllib.py                  标准库与内置 Tomli 的兼容入口
+├── _vendor/tomli/               Python 3.9/3.10 使用的 TOML 解析器
+├── _version.py                  唯一版本号来源
+├── cli.py                       命令行入口
+├── hud.py                       通用 HUD 数据模型和渲染器
+├── installer.py                 安装、更新和启动器管理
+├── runtime.py                   版本化运行时与原子切换
+├── paths.py                     配置和状态路径
+├── storage.py                   原子文件与 JSON 操作
+├── toml_edit.py                 保守修改 Codex TOML 配置
 └── providers/
-    ├── base.py               提供方接口
-    ├── claude.py             Claude Code 集成
-    ├── codex.py              Codex CLI 原生状态栏集成
-    └── kimi.py               Kimi CLI 内置工具栏集成
+    ├── base.py                  提供方接口
+    ├── claude.py                Claude Code 集成
+    ├── codex.py                 Codex CLI 原生状态栏集成
+    └── kimi.py                  Kimi CLI 内置工具栏集成
 ```
 
 ## 开发与测试
@@ -241,3 +246,5 @@ python3.9 bin/llm-hud providers
 ## 许可证
 
 本项目使用 [MIT License](LICENSE)。
+为兼容 Python 3.9 和 3.10，源码内置了同为 MIT 许可的 Tomli 2.2.1；其许可证保留在
+[`src/llm_hud/_vendor/tomli/LICENSE`](src/llm_hud/_vendor/tomli/LICENSE)。
