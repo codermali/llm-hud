@@ -148,7 +148,13 @@ class CodexProvider(Provider):
     capabilities = ProviderCapabilities(
         integration="native",
         custom_renderer=False,
-        persistent_metrics=("model", "cwd", "weekly-quota", "context"),
+        persistent_metrics=(
+            "model",
+            "cwd",
+            "five-hour-quota",
+            "weekly-quota",
+            "context",
+        ),
     )
 
     def install(self, command_path: str) -> Result:

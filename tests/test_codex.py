@@ -18,6 +18,14 @@ def status_line(path: Path):
 
 
 class CodexProviderTests(unittest.TestCase):
+    def test_persistent_metrics_cover_every_configured_quota_field(self):
+        # The providers listing must reflect HUD_ITEMS: five-hour and weekly
+        # quotas are both configured, so both belong in the metadata.
+        self.assertEqual(
+            CodexProvider.capabilities.persistent_metrics,
+            ("model", "cwd", "five-hour-quota", "weekly-quota", "context"),
+        )
+
     def test_crlf_config_survives_reinstall_and_uninstall(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
