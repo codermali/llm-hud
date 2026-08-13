@@ -760,12 +760,6 @@ def _restore_file_snapshot(
             f"{description} changed before rollback; left it untouched: {path}"
         )
     if previous.content is None:
-        _assert_unchanged_snapshot(
-            path,
-            installed,
-            description,
-            maximum_size=maximum_size,
-        )
         try:
             path.unlink()
             fsync_directory(path.parent)
@@ -1108,8 +1102,6 @@ def _remove_staging(
     try:
         root_metadata = root.lstat()
         metadata = staging.lstat()
-    except FileNotFoundError:
-        return
     except OSError:
         return
     if (
