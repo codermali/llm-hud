@@ -15,6 +15,11 @@ fi
 default_repo_tarball=$default_release_base/llm-hud.tar.gz
 default_repo_checksum=$default_release_base/SHA256SUMS
 if [ "${LLM_HUD_TARBALL_URL+x}" = x ]; then
+  if [ -z "$LLM_HUD_TARBALL_URL" ]; then
+    printf '%s\n' "LLM_HUD_TARBALL_URL is set but empty." >&2
+    printf '%s\n' "Unset it to use the release download, or set it to a tarball URL." >&2
+    exit 1
+  fi
   repo_tarball=$LLM_HUD_TARBALL_URL
   repo_checksum=${LLM_HUD_CHECKSUM_URL:-}
 else
@@ -197,10 +202,14 @@ import sys
 
 checksum_path = pathlib.Path(sys.argv[1])
 archive_path = pathlib.Path(sys.argv[2])
+# A custom mirror may list the artifact under its published filename rather
+# than llm-hud.tar.gz, so accept the tarball URL basename as well.
+expected_names = {"llm-hud.tar.gz", sys.argv[3].rpartition("/")[2]}
+expected_names.discard("")
 matches = []
 for line in checksum_path.read_text(encoding="ascii").splitlines():
     fields = line.split()
-    if len(fields) == 2 and fields[1].lstrip("*") == "llm-hud.tar.gz":
+    if len(fields) == 2 and fields[1].lstrip("*") in expected_names:
         matches.append(fields[0])
 if (
     len(matches) != 1
@@ -218,7 +227,7 @@ if actual != matches[0]:
         "llm-hud: release archive checksum mismatch "
         "(a release may be publishing right now; retry in a minute)"
     )
-' "$checksum" "$archive"
+' "$checksum" "$archive" "$repo_tarball"
   fi
   tar -xzf "$archive" -C "$cleanup_dir"
   source_root=$(find "$cleanup_dir" -mindepth 1 -maxdepth 1 -type d -print | head -n 1)
@@ -232,14 +241,14 @@ reject_line_break source-root "$source_root"
 
 # Canonicalize before comparing so checkout aliases never enter the managed
 # installation branch.
-mkdir -p "$install_root"
+mkdir -p -- "$install_root"
 if ! canonical_directory "$install_root"; then
   printf '%s\n' "Cannot resolve LLM_HUD_INSTALL_DIR: $install_root" >&2
   exit 1
 fi
 install_root=$canonical_result
 reject_line_break canonical-install-root "$install_root"
-mkdir -p "$bin_dir"
+mkdir -p -- "$bin_dir"
 if ! canonical_directory "$bin_dir"; then
   printf '%s\n' "Cannot resolve LLM_HUD_BIN_DIR: $bin_dir" >&2
   exit 1
@@ -348,12 +357,24 @@ if [ "$configure_status" -ne 0 ]; then
     "Provider configuration did not complete; rerun after installing a supported CLI."
 fi
 
-case ":$PATH:" in
-  *":$bin_dir:"*) ;;
-  *)
-    printf 'Note: %s is not on your PATH. Add this to your shell profile:\n' "$bin_dir"
-    printf '  export PATH="%s:$PATH"\n' "$bin_dir"
-    ;;
-esac
+# PATH may spell the launcher directory differently (trailing slash, symlink),
+# so canonicalize each entry before deciding to print the hint; entries that do
+# not resolve cannot be $bin_dir, which exists.
+bin_dir_on_path=""
+path_remainder="$PATH:"
+while [ -n "$path_remainder" ]; do
+  path_entry=${path_remainder%%:*}
+  path_remainder=${path_remainder#*:}
+  [ -n "$path_entry" ] || continue
+  canonical_directory "$path_entry" || continue
+  if [ "$canonical_result" = "$bin_dir" ]; then
+    bin_dir_on_path=x
+    break
+  fi
+done
+if [ -z "$bin_dir_on_path" ]; then
+  printf 'Note: %s is not on your PATH. Add this to your shell profile:\n' "$bin_dir"
+  printf '  export PATH="%s:$PATH"\n' "$bin_dir"
+fi
 
 exit "$configure_status"
