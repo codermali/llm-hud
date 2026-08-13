@@ -155,7 +155,16 @@ reject_line_break resolved-python "$python_bin"
 # Locate the source tree: the directory containing this script when run from a
 # checkout, otherwise a fresh download of the repository tarball.
 cleanup_dir=""
-trap '[ -n "$cleanup_dir" ] && rm -rf "$cleanup_dir"' EXIT
+cleanup_temp_dir() {
+  [ -z "$cleanup_dir" ] || rm -rf "$cleanup_dir" || :
+}
+trap 'cleanup_temp_dir' EXIT
+# dash runs the EXIT trap only on normal exit, so Ctrl-C or a kill during the
+# download would leak the mktemp directory; clean up on the signal too and
+# leave the conventional 128+signal exit status in place.
+trap 'cleanup_temp_dir; trap - EXIT; exit 129' HUP
+trap 'cleanup_temp_dir; trap - EXIT; exit 130' INT
+trap 'cleanup_temp_dir; trap - EXIT; exit 143' TERM
 # $0 is not a readable file when the script arrives on stdin (curl | sh); only
 # then does dirname "$0" point at the caller's cwd rather than a checkout.
 script_dir=""
