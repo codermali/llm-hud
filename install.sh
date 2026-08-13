@@ -89,12 +89,26 @@ pin_release_assets() {
   # A release-attached installer has its own tag embedded by release.yml. Keep
   # all three assets on that tag instead of resolving `latest` a second time.
   [ "$embedded_release_tag" = '__LLM_HUD_RELEASE_TAG__' ] || return 0
-  command -v curl >/dev/null 2>&1 || return 0
-  release_url=$(
-    curl -fsSL --connect-timeout 15 --max-time 60 -o /dev/null \
-      -w '%{url_effective}' \
-      https://github.com/codermali/llm-hud/releases/latest 2>/dev/null
-  ) || return 0
+  if command -v curl >/dev/null 2>&1; then
+    release_url=$(
+      curl -fsSL --connect-timeout 15 --max-time 60 -o /dev/null \
+        -w '%{url_effective}' \
+        https://github.com/codermali/llm-hud/releases/latest 2>/dev/null
+    ) || return 0
+  elif command -v wget >/dev/null 2>&1; then
+    # GNU wget reports the redirect target on stderr; a wget without these
+    # options leaves release_url empty and keeps the unpinned fallback.
+    release_url=$(
+      wget --spider --server-response --max-redirect=0 --timeout=15 --tries=1 \
+        https://github.com/codermali/llm-hud/releases/latest 2>&1 |
+        sed -n 's/^[[:space:]]*[Ll]ocation:[[:space:]]*//p' |
+        head -n 1 |
+        tr -d '\r'
+    ) || release_url=""
+    [ -n "$release_url" ] || return 0
+  else
+    return 0
+  fi
   case "$release_url" in
     https://github.com/codermali/llm-hud/releases/tag/*) ;;
     *) return 0 ;;
