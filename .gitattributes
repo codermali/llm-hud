@@ -1,0 +1,8 @@
+# Runtime payloads are digested byte-for-byte and the managed text readers
+# run in CRT text mode on Windows; keep every checkout LF so source installs
+# hash identically on all platforms.
+* text=auto eol=lf
+
+# The v0.2.0 runtime fixture is frozen history: its bytes, modes, and digest
+# are pinned by tests and must never be rewritten by line-ending translation.
+tests/fixtures/runtime_v0_2_0/** -text

@@ -356,6 +356,32 @@ class ActivationTests(unittest.TestCase):
             sync_directory.assert_called_once_with(root)
 
 
+class ManagedPayloadBytesTests(unittest.TestCase):
+    def test_runtime_payload_files_stay_free_of_crlf_and_sub_bytes(self):
+        # Managed reads run in CRT text mode on Windows: CRLF is normalized
+        # and 0x1A ends the read, so digests only stay stable across
+        # platforms while payload files never contain either byte. Keep this
+        # invariant enforced instead of changing digest semantics, which
+        # would break validation of already-installed runtimes.
+        repo_root = Path(__file__).resolve().parent.parent
+        payload_files = [
+            repo_root / "bin" / "llm-hud",
+            repo_root / "scripts" / "llm-hud-dispatcher",
+            repo_root / "scripts" / "runtime_control.py",
+        ]
+        payload_files.extend(
+            path
+            for path in sorted((repo_root / "src" / "llm_hud").rglob("*"))
+            if path.is_file() and "__pycache__" not in path.parts
+        )
+        self.assertGreater(len(payload_files), 10)
+        for path in payload_files:
+            with self.subTest(path=str(path.relative_to(repo_root))):
+                content = path.read_bytes()
+                self.assertNotIn(b"\r", content)
+                self.assertNotIn(b"\x1a", content)
+
+
 class RuntimeSourceTests(unittest.TestCase):
     def test_source_digest_is_stable_and_changes_with_content_or_mode(self):
         with tempfile.TemporaryDirectory() as directory:
