@@ -4,13 +4,21 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from llm_hud.cli import _probe_version, build_parser, command_doctor
+from llm_hud.cli import (
+    PROVIDER_IDS,
+    RENDER_PROVIDER_IDS,
+    _probe_version,
+    build_parser,
+    command_doctor,
+)
+from llm_hud.providers import provider_by_id, providers
 from llm_hud.providers.codex import HUD_ITEMS
 from llm_hud.providers.claude import ClaudeProvider
 from tests.support import Environment
@@ -83,6 +91,50 @@ class InstallCommandTests(unittest.TestCase):
                 with contextlib.redirect_stdout(buffer):
                     args.handler(args)
         self.assertIn("codex CLI was not detected", buffer.getvalue())
+
+
+class ProviderRegistryTests(unittest.TestCase):
+    def test_provider_id_literals_match_the_registered_providers(self):
+        self.assertEqual(PROVIDER_IDS, tuple(p.id for p in providers()))
+        self.assertEqual(
+            RENDER_PROVIDER_IDS,
+            tuple(p.id for p in providers() if p.capabilities.custom_renderer),
+        )
+
+    def test_provider_by_id_matches_ids_and_rejects_unknown_ones(self):
+        for provider_id in PROVIDER_IDS:
+            self.assertEqual(provider_by_id(provider_id).id, provider_id)
+        with self.assertRaises(KeyError):
+            provider_by_id("no-such-provider")
+
+    def test_render_tick_does_not_import_toml_machinery(self):
+        # codex needs a TOML parser; pulling it in from the "render claude"
+        # hot path would slow every status-line refresh.
+        script = (
+            "import sys\n"
+            "import llm_hud.cli\n"
+            "from llm_hud.providers import provider_by_id\n"
+            "output = provider_by_id('claude').render(sys.stdin.buffer.read())\n"
+            "assert output\n"
+            "loaded = sorted(name for name in sys.modules if 'toml' in name)\n"
+            "assert not loaded, loaded\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environment = os.environ.copy()
+            environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+            environment["LLM_HUD_STATE_DIR"] = str(root / "state")
+            environment["LLM_HUD_CLAUDE_SETTINGS"] = str(root / "settings.json")
+            completed = subprocess.run(
+                [sys.executable, "-c", script],
+                input=b'{"model": {"display_name": "Opus"}}',
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+                check=False,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr.decode())
 
 
 class RenderCommandTests(unittest.TestCase):

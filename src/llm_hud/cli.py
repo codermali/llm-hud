@@ -12,10 +12,11 @@ from llm_hud import __version__
 from llm_hud.providers import provider_by_id, providers
 
 
-PROVIDER_IDS = tuple(provider.id for provider in providers())
-RENDER_PROVIDER_IDS = tuple(
-    provider.id for provider in providers() if provider.capabilities.custom_renderer
-)
+# Keep in sync with the providers registered in llm_hud.providers (pinned by
+# a test); deriving these from providers() would import every provider module
+# on every render tick.
+PROVIDER_IDS = ("claude", "codex", "kimi")
+RENDER_PROVIDER_IDS = ("claude",)
 # Keep in sync with llm_hud.runtime.LAUNCHER_STATE_NAME (pinned by a test);
 # importing the runtime module here would slow every render tick.
 _LAUNCHER_STATE_NAME = ".llm-hud-launcher-state.json"
