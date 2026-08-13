@@ -27,6 +27,62 @@ class ContentChangedError(OSError):
 _EXPECTED_CONTENT_UNSET = object()
 
 
+def _acquire_lock_descriptor(
+    path: Path,
+    timeout: float,
+    *,
+    lock_error: type[Exception],
+    subject: str,
+    operations: str,
+    busy_message: str,
+    secure_mode: int | None = None,
+) -> int:
+    """Open, verify, and exclusively lock one managed lock file.
+
+    The opened descriptor must match the path by (st_dev, st_ino) so a
+    symlink or a concurrently swapped file never receives the lock.  Returns
+    the descriptor, which stays open for the lifetime of the lock.
+    """
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as error:
+        raise lock_error(f"cannot open {subject} {path}: {error}") from error
+    try:
+        descriptor_metadata = os.fstat(descriptor)
+        path_metadata = path.lstat()
+    except OSError as error:
+        os.close(descriptor)
+        raise lock_error(f"cannot verify {subject} {path}: {error}") from error
+    if (
+        not stat.S_ISREG(descriptor_metadata.st_mode)
+        or stat.S_ISLNK(path_metadata.st_mode)
+        or (descriptor_metadata.st_dev, descriptor_metadata.st_ino)
+        != (path_metadata.st_dev, path_metadata.st_ino)
+    ):
+        os.close(descriptor)
+        raise lock_error(f"{subject} is not a regular managed file: {path}")
+    if secure_mode is not None:
+        try:
+            set_descriptor_mode(descriptor, secure_mode)
+        except OSError as error:
+            os.close(descriptor)
+            raise lock_error(f"cannot secure {subject} {path}: {error}") from error
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        try:
+            try_lock_descriptor(descriptor)
+            return descriptor
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                os.close(descriptor)
+                raise lock_error(busy_message) from None
+            time.sleep(0.05)
+        except OSError as error:
+            os.close(descriptor)
+            raise lock_error(f"cannot lock {operations} {path}: {error}") from error
+
+
 class ProviderLock:
     """Serialize llm-hud state/config transactions for one provider.
 
@@ -43,52 +99,16 @@ class ProviderLock:
 
     def __enter__(self) -> ProviderLock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
-        try:
-            descriptor = os.open(self.path, flags, 0o600)
-        except OSError as error:
-            raise OSError(f"cannot open provider lock {self.path}: {error}") from error
-        try:
-            descriptor_metadata = os.fstat(descriptor)
-            path_metadata = self.path.lstat()
-        except OSError as error:
-            os.close(descriptor)
-            raise OSError(f"cannot verify provider lock {self.path}: {error}") from error
-        if (
-            not stat.S_ISREG(descriptor_metadata.st_mode)
-            or stat.S_ISLNK(path_metadata.st_mode)
-            or (descriptor_metadata.st_dev, descriptor_metadata.st_ino)
-            != (path_metadata.st_dev, path_metadata.st_ino)
-        ):
-            os.close(descriptor)
-            raise OSError(
-                f"provider lock is not a regular managed file: {self.path}"
-            )
-        try:
-            set_descriptor_mode(descriptor, 0o600)
-        except OSError as error:
-            os.close(descriptor)
-            raise OSError(
-                f"cannot secure provider lock {self.path}: {error}"
-            ) from error
-        deadline = time.monotonic() + max(0.0, self.timeout)
-        while True:
-            try:
-                try_lock_descriptor(descriptor)
-                self._descriptor = descriptor
-                return self
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    os.close(descriptor)
-                    raise OSError(
-                        f"another provider operation is in progress: {self.path}"
-                    ) from None
-                time.sleep(0.05)
-            except OSError as error:
-                os.close(descriptor)
-                raise OSError(
-                    f"cannot lock provider operations {self.path}: {error}"
-                ) from error
+        self._descriptor = _acquire_lock_descriptor(
+            self.path,
+            self.timeout,
+            lock_error=OSError,
+            subject="provider lock",
+            operations="provider operations",
+            busy_message=f"another provider operation is in progress: {self.path}",
+            secure_mode=0o600,
+        )
+        return self
 
     def __exit__(
         self,

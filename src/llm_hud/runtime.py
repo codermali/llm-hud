@@ -7,15 +7,19 @@ import os
 import re
 import shutil
 import stat
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 from typing import Any
 
-from llm_hud._platform import try_lock_descriptor, unlock_descriptor
-from llm_hud.storage import atomic_write_json, atomic_write_text, fsync_directory
+from llm_hud._platform import unlock_descriptor
+from llm_hud.storage import (
+    _acquire_lock_descriptor,
+    atomic_write_json,
+    atomic_write_text,
+    fsync_directory,
+)
 
 
 LAYOUT_MARKER_NAME = ".llm-hud-layout"
@@ -880,44 +884,15 @@ class RuntimeLock:
 
     def __enter__(self) -> RuntimeLock:
         _require_install_ownership(self.root)
-        path = self.root / LOCK_NAME
-        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
-        try:
-            descriptor = os.open(path, flags, 0o600)
-        except OSError as error:
-            raise RuntimeLayoutError(f"cannot open update lock {path}: {error}") from error
-        try:
-            descriptor_metadata = os.fstat(descriptor)
-            path_metadata = path.lstat()
-        except OSError as error:
-            os.close(descriptor)
-            raise RuntimeLayoutError(f"cannot verify update lock {path}: {error}") from error
-        if (
-            not stat.S_ISREG(descriptor_metadata.st_mode)
-            or stat.S_ISLNK(path_metadata.st_mode)
-            or (descriptor_metadata.st_dev, descriptor_metadata.st_ino)
-            != (path_metadata.st_dev, path_metadata.st_ino)
-        ):
-            os.close(descriptor)
-            raise RuntimeLayoutError(f"update lock is not a regular managed file: {path}")
-        deadline = time.monotonic() + max(0.0, self.timeout)
-        while True:
-            try:
-                try_lock_descriptor(descriptor)
-                self._descriptor = descriptor
-                return self
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    os.close(descriptor)
-                    raise RuntimeLayoutError(
-                        "another runtime operation is in progress"
-                    ) from None
-                time.sleep(0.05)
-            except OSError as error:
-                os.close(descriptor)
-                raise RuntimeLayoutError(
-                    f"cannot lock runtime operations {path}: {error}"
-                ) from error
+        self._descriptor = _acquire_lock_descriptor(
+            self.root / LOCK_NAME,
+            self.timeout,
+            lock_error=RuntimeLayoutError,
+            subject="update lock",
+            operations="runtime operations",
+            busy_message="another runtime operation is in progress",
+        )
+        return self
 
     def __exit__(
         self,
