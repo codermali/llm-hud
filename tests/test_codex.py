@@ -129,6 +129,32 @@ class CodexProviderTests(unittest.TestCase):
                 self.assertEqual(uninstalled.status, "uninstalled", uninstalled.message)
             self.assertEqual(status_line(config), ["current-dir", "emoji-😀"])
 
+    def test_deleted_status_line_with_saved_original_is_a_conflict(self):
+        # The saved original can only be abandoned by an explicit --forget;
+        # uninstall must not treat a user-deleted status_line as "restored".
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            config.write_text('[tui]\nstatus_line = ["current-dir"]\n')
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = CodexProvider()
+                provider.install("ignored")
+                config.write_text("[tui]\n")
+                result = provider.uninstall()
+                self.assertEqual(result.status, "conflict", result.message)
+                self.assertEqual(config.read_text(), "[tui]\n")
+                self.assertTrue(
+                    (root / "state" / "providers" / "codex.json").is_file()
+                )
+                # Reverting the deletion makes the saved original usable again.
+                config.write_text('[tui]\nstatus_line = ["current-dir"]\n')
+                self.assertEqual(provider.install("ignored").status, "installed")
+                self.assertEqual(provider.uninstall().status, "uninstalled")
+            self.assertEqual(status_line(config), ["current-dir"])
+
     def test_uninstall_preserves_items_added_later(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -274,6 +274,11 @@ class CodexProvider(Provider):
         if state is None:
             return Result(self.id, "skipped", "no installation state")
         if not present:
+            # An absent status_line restores the pre-install state only when
+            # none existed before install; discarding the restore record while
+            # original items are saved must stay an explicit --forget decision.
+            if state.get("original_present"):
+                return Result(self.id, "conflict", _CONFLICT_MESSAGE)
             try:
                 validate_text_snapshot(
                     path,
