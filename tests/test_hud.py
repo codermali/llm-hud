@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import unittest
 from datetime import datetime
 from unittest import mock
@@ -127,6 +128,16 @@ class HudTests(unittest.TestCase):
                 rendered = render_hud(snapshot, color=True)
                 self.assertIn(f"\x1b[{tone}m{label}\x1b[0m", rendered)
                 self.assertIn(f"\x1b[{tone}m█", rendered)
+
+    def test_nan_usage_degrades_to_missing_data_instead_of_crashing(self):
+        snapshot = HudSnapshot(
+            provider="Claude",
+            windows=(UsageWindow("5h", math.nan), UsageWindow("7d", 41)),
+        )
+        self.assertEqual(
+            render_hud(snapshot, color=False),
+            "Claude\n5h  ░░░░░░░░░░    --    7d  ████░░░░░░   41% used",
+        )
 
     def test_reset_times_render_per_window_format(self):
         stamp = 1900000000.0

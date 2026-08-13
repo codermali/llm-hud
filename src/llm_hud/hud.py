@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import re
 import unicodedata
@@ -103,7 +104,9 @@ def _compact_path(value: str | None) -> str | None:
 
 def _percent_value(value: float | None) -> int | None:
     """Rounded percentage; color thresholds must follow the displayed number."""
-    if value is None:
+    # NaN survives the min/max clamp and would crash int(); the render hot
+    # path must degrade to missing data instead.
+    if value is None or math.isnan(value):
         return None
     value = max(0.0, min(100.0, value))
     if value >= 99.5:
@@ -140,15 +143,18 @@ def _reset_text(window: UsageWindow) -> str | None:
 
 
 def _window_segment(window: UsageWindow, color: bool) -> str:
-    if window.used is None:
+    used = window.used
+    if used is not None and math.isnan(used):
+        used = None
+    if used is None:
         filled = 0
     else:
-        bounded = max(0.0, min(100.0, window.used))
+        bounded = max(0.0, min(100.0, used))
         filled = max(0, min(BAR_WIDTH, int(bounded / 10 + 0.5)))
-    tone = _used_color(window.used)
+    tone = _used_color(used)
     bar = _style("█" * filled, tone, color) + _style("░" * (BAR_WIDTH - filled), "2", color)
-    percent = _style(f"{_percent(window.used):>4}", tone, color)
-    if window.used is not None:
+    percent = _style(f"{_percent(used):>4}", tone, color)
+    if used is not None:
         percent = f"{percent} {_style('used', '2', color)}"
     parts = [f"{window.label:<2}", bar, percent]
     reset = _reset_text(window)
