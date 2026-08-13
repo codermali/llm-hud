@@ -25,6 +25,7 @@ from llm_hud.runtime import (
     initialize_layout,
     parse_activation,
     read_activation,
+    restore_activation,
     runtime_path,
     source_digest,
     validate_release_id,
@@ -233,6 +234,22 @@ class ActivationTests(unittest.TestCase):
             clear_activation(root, expected_active=first)
             self.assertIsNone(read_activation(root))
             validate_runtime(root, first)
+
+    def test_restore_and_clear_reject_an_invalid_expected_active(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            initialize_owned_layout(root)
+            first = create_runtime(root, "first", "1.0.0")
+            activate(root, first)
+
+            with self.assertRaisesRegex(RuntimeLayoutError, "invalid release id"):
+                clear_activation(root, expected_active="../evil")
+            with self.assertRaisesRegex(RuntimeLayoutError, "invalid release id"):
+                restore_activation(
+                    root, Activation(first), expected_active="../evil"
+                )
+
+            self.assertEqual(read_activation(root), Activation(first))
 
     def test_failed_activation_replace_keeps_the_old_record(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -596,6 +613,17 @@ class RuntimeSourceTests(unittest.TestCase):
             marker.write_text(json.dumps(payload))
             with self.assertRaisesRegex(RuntimeLayoutError, "fields do not match"):
                 validate_runtime(root, fourth)
+
+    @unittest.skipIf(os.name == "nt", "Windows has no POSIX execute bit")
+    def test_finalize_rejects_a_non_executable_staged_launcher(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            initialize_owned_layout(root)
+            staging = stage_runtime(root, "candidate", "1.2.3")
+            os.chmod(staging / "bin" / "llm-hud", 0o644)
+
+            with self.assertRaisesRegex(RuntimeLayoutError, "not executable"):
+                finalize_runtime(root, staging, "1.2.3")
 
     def test_staged_code_version_must_match_requested_version(self):
         with tempfile.TemporaryDirectory() as directory:

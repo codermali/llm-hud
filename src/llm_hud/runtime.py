@@ -338,6 +338,17 @@ def _read_runtime_metadata(path: Path) -> RuntimeMetadata:
 
 def validate_runtime(root: Path, release_id: str) -> RuntimeMetadata:
     _require_layout(root)
+    return _validate_runtime_in_layout(root, release_id)
+
+
+def _validate_runtime_in_layout(
+    root: Path, release_id: str, *, verify_digest: bool = True
+) -> RuntimeMetadata:
+    """Validate one runtime after the caller already verified the layout.
+
+    ``verify_digest=False`` skips only the tree re-hash; it is reserved for a
+    tree whose digest was computed moments earlier under the same held lock.
+    """
     path = runtime_path(root, release_id)
     try:
         metadata = path.lstat()
@@ -367,9 +378,10 @@ def validate_runtime(root: Path, release_id: str) -> RuntimeMetadata:
     launcher = path / "bin" / "llm-hud"
     if not os.access(launcher, os.X_OK):
         raise RuntimeLayoutError(f"runtime launcher is not executable: {launcher}")
-    actual_digest = source_digest(path)
-    if actual_digest != runtime_metadata.content_sha256:
-        raise RuntimeLayoutError(f"runtime content digest does not match: {path}")
+    if verify_digest:
+        actual_digest = source_digest(path)
+        if actual_digest != runtime_metadata.content_sha256:
+            raise RuntimeLayoutError(f"runtime content digest does not match: {path}")
     if embedded_runtime_version(path) != runtime_metadata.version:
         raise RuntimeLayoutError(f"runtime code version does not match marker: {path}")
     return runtime_metadata
@@ -377,6 +389,10 @@ def validate_runtime(root: Path, release_id: str) -> RuntimeMetadata:
 
 def read_activation(root: Path) -> Activation | None:
     _require_layout(root)
+    return _read_activation_in_layout(root)
+
+
+def _read_activation_in_layout(root: Path) -> Activation | None:
     raw = _read_owned_text(root / ACTIVATION_NAME, "activation record")
     return None if raw is None else parse_activation(raw)
 
@@ -388,8 +404,8 @@ def _activate_with_replaced_unlocked(
     expected_active: str | None | object = _UNSET,
 ) -> tuple[Activation, Activation | None]:
     _require_layout(root)
-    validate_runtime(root, release_id)
-    current = read_activation(root)
+    _validate_runtime_in_layout(root, release_id)
+    current = _read_activation_in_layout(root)
     actual_active = current.active if current is not None else None
     if expected_active is not _UNSET:
         if expected_active is not None:
@@ -403,11 +419,11 @@ def _activate_with_replaced_unlocked(
         if current.active == release_id:
             return current, None
         try:
-            validate_runtime(root, current.active)
+            _validate_runtime_in_layout(root, current.active)
         except RuntimeLayoutError:
             if current.previous is not None and current.previous != release_id:
                 try:
-                    validate_runtime(root, current.previous)
+                    _validate_runtime_in_layout(root, current.previous)
                 except RuntimeLayoutError:
                     pass
                 else:
@@ -479,7 +495,6 @@ def _restore_activation_unlocked(
     *,
     expected_active: str,
 ) -> Activation:
-    validate_release_id(expected_active)
     current = read_activation(root)
     actual_active = current.active if current is not None else None
     if actual_active != expected_active:
@@ -524,7 +539,6 @@ def _clear_activation_unlocked(
     *,
     expected_active: str,
 ) -> None:
-    validate_release_id(expected_active)
     current = read_activation(root)
     actual_active = current.active if current is not None else None
     if actual_active != expected_active:
@@ -856,7 +870,10 @@ def _finalize_runtime_unlocked(
         ) from error
     _fsync_directory_required(destination.parent)
     _fsync_directory_required(root)
-    return validate_runtime(root, release_id)
+    # The rename moved the exact tree hashed by validate_staged_runtime under
+    # this same held lock, so post-rename verification keeps every layout,
+    # marker, and launcher check but not a second tree hash.
+    return _validate_runtime_in_layout(root, release_id, verify_digest=False)
 
 
 def finalize_runtime(
