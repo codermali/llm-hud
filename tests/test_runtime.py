@@ -304,6 +304,18 @@ class ActivationTests(unittest.TestCase):
                 self.assertFalse((root / LAYOUT_MARKER_NAME).exists())
                 self.assertTrue(reserved.exists())
 
+    def test_layout_reclaims_an_empty_leftover_update_lock(self):
+        # A crash between creating the update lock and writing the layout
+        # marker must not wedge the root until the lock is deleted by hand.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / INSTALL_MARKER_NAME).write_text(f"{INSTALL_MARKER_VALUE}\n")
+            (root / ".llm-hud-update.lock").touch()
+
+            initialize_layout(root)
+
+            self.assertTrue((root / LAYOUT_MARKER_NAME).is_file())
+
     def test_wrong_or_symlinked_ownership_marker_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

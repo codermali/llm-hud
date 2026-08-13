@@ -201,13 +201,23 @@ def initialize_layout(root: Path) -> None:
         )
         for path in reserved:
             try:
-                path.lstat()
+                metadata = path.lstat()
             except FileNotFoundError:
                 continue
             except OSError as error:
                 raise RuntimeLayoutError(
                     f"cannot inspect reserved runtime path {path}: {error}"
                 ) from error
+            if (
+                path.name == LOCK_NAME
+                and stat.S_ISREG(metadata.st_mode)
+                and metadata.st_size == 0
+            ):
+                # An operation that crashed between creating its update lock
+                # and writing the layout marker leaves this empty file behind;
+                # refusing it would wedge the root permanently. The lock never
+                # carries data, so reclaiming an empty one destroys nothing.
+                continue
             raise RuntimeLayoutError(
                 f"refusing to claim pre-existing reserved runtime path: {path}"
             )
