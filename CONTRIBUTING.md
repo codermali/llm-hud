@@ -43,7 +43,7 @@ src/llm_hud/
 ├── storage.py                   文件、锁、快照和 JSON 操作
 ├── toml_edit.py                 保守修改 Codex TOML 配置
 └── providers/
-    ├── base.py                  provider 接口
+    ├── base.py                  provider 接口与共享事务协议
     ├── claude.py                Claude Code 集成
     ├── codex.py                 Codex CLI 原生状态栏集成
     └── kimi.py                  Kimi CLI 内置工具栏声明
