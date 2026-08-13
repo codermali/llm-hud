@@ -249,6 +249,24 @@ class StableDispatcherTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("stable runtime control", result.stderr)
 
+    def test_reports_a_truncated_stable_control_without_a_traceback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            dispatcher = install_stable_control(root)
+            control = root / "control" / "runtime_control.py"
+            source = control.read_text()
+            control.write_text(source[: source.index("def run(") + len("def ")])
+
+            result = run_dispatcher(dispatcher, "doctor")
+
+            self.assertEqual(result.returncode, 1)
+            self.assertNotIn("Traceback", result.stderr)
+            lines = result.stderr.splitlines()
+            self.assertEqual(len(lines), 1, result.stderr)
+            self.assertIn("llm-hud: stable runtime control is damaged", lines[0])
+            self.assertIn("install.sh", lines[0])
+
     def test_rejects_a_symlinked_ownership_marker(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "runtime"

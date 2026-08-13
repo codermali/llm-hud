@@ -98,9 +98,12 @@ def _load_control(path: Path, source: str) -> ModuleType:
     try:
         code = compile(source, str(path), "exec", dont_inherit=True)
         exec(code, module.__dict__)
-    except Exception:
+    except Exception as error:
         sys.modules.pop(name, None)
-        raise
+        raise DispatcherError(
+            f"stable runtime control is damaged: {path}: {error}; "
+            "re-run install.sh to repair the installation"
+        ) from error
     return module
 
 
