@@ -1556,34 +1556,49 @@ def _prune_inactive_runtimes(root: Path, *, lock_timeout: float = 10.0) -> None:
             )
 
 
-def _smoke_test_runtime_candidate(
-    staging: Path,
-    python: Path,
+def _assert_reports_version(
+    argv: list[str],
+    env: dict[str, str] | None,
     version: str,
+    description: str,
 ) -> None:
     try:
         completed = subprocess.run(
-            [
-                str(python),
-                "-I",
-                "-B",
-                str(staging / DISPATCHER_DESTINATION),
-                "--version",
-            ],
+            argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             timeout=15,
             check=False,
+            env=env,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
-        raise RuntimeLayoutError(f"runtime candidate smoke test failed: {error}") from error
+        raise RuntimeLayoutError(f"{description} failed: {error}") from error
     expected = f"llm-hud {version}"
     if completed.returncode != 0 or completed.stdout.strip() != expected:
         detail = completed.stderr.strip() or completed.stdout.strip() or "no output"
         raise RuntimeLayoutError(
-            f"runtime candidate smoke test failed: expected {expected!r}; {detail}"
+            f"{description} failed: expected {expected!r}; {detail}"
         )
+
+
+def _smoke_test_runtime_candidate(
+    staging: Path,
+    python: Path,
+    version: str,
+) -> None:
+    _assert_reports_version(
+        [
+            str(python),
+            "-I",
+            "-B",
+            str(staging / DISPATCHER_DESTINATION),
+            "--version",
+        ],
+        None,
+        version,
+        "runtime candidate smoke test",
+    )
 
 
 def _validate_control_source(control: str) -> str:
@@ -1612,33 +1627,22 @@ def _preflight_runtime_release(
     control: str,
 ) -> None:
     control = _validate_control_source(control)
-    try:
-        completed = subprocess.run(
-            [
-                str(python),
-                "-I",
-                "-B",
-                "-c",
-                control,
-                str(root),
-                "--preflight-release",
-                release_id,
-                "--version",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise RuntimeLayoutError(f"runtime dispatch preflight failed: {error}") from error
-    expected = f"llm-hud {version}"
-    if completed.returncode != 0 or completed.stdout.strip() != expected:
-        detail = completed.stderr.strip() or completed.stdout.strip() or "no output"
-        raise RuntimeLayoutError(
-            f"runtime dispatch preflight failed: expected {expected!r}; {detail}"
-        )
+    _assert_reports_version(
+        [
+            str(python),
+            "-I",
+            "-B",
+            "-c",
+            control,
+            str(root),
+            "--preflight-release",
+            release_id,
+            "--version",
+        ],
+        None,
+        version,
+        "runtime dispatch preflight",
+    )
 
 
 def _install_runtime_from_source(
@@ -1842,30 +1846,18 @@ def _restore_after_install_failure_unlocked(
 def _smoke_test_dispatcher(root: Path, python: Path, version: str) -> None:
     environment = os.environ.copy()
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
-    try:
-        completed = subprocess.run(
-            [
-                str(python),
-                "-I",
-                "-B",
-                str(root / DISPATCHER_DESTINATION),
-                "--version",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=15,
-            check=False,
-            env=environment,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise RuntimeLayoutError(f"stable dispatcher smoke test failed: {error}") from error
-    expected = f"llm-hud {version}"
-    if completed.returncode != 0 or completed.stdout.strip() != expected:
-        detail = completed.stderr.strip() or completed.stdout.strip() or "no output"
-        raise RuntimeLayoutError(
-            f"stable dispatcher smoke test failed: expected {expected!r}; {detail}"
-        )
+    _assert_reports_version(
+        [
+            str(python),
+            "-I",
+            "-B",
+            str(root / DISPATCHER_DESTINATION),
+            "--version",
+        ],
+        environment,
+        version,
+        "stable dispatcher smoke test",
+    )
 
 
 def install_complete(
