@@ -9,14 +9,20 @@ from llm_hud.paths import (
     provider_journal_path,
     provider_state_path,
 )
-from llm_hud.providers.base import Provider, ProviderCapabilities, Result
+from llm_hud.providers.base import (
+    ProviderCapabilities,
+    Result,
+    TransactionalProvider,
+    conflict_message,
+    recover_interrupted_transaction,
+    run_install_transaction,
+    run_uninstall_transaction,
+)
 from llm_hud.storage import (
     ContentChangedError,
-    ProviderLock,
     StateFileError,
     atomic_write_provider_state,
     atomic_write_text,
-    read_provider_journal,
     read_provider_state,
     read_text_snapshot,
     resolve_file_target,
@@ -40,10 +46,7 @@ OBSOLETE_ITEMS: list[str] = []
 # release must keep reading every schema the previous release wrote.  Bump the
 # written schema only together with tests/test_state_abi.py.
 STATE_SCHEMAS = frozenset((1,))
-_CONFLICT_MESSAGE = (
-    "status_line was customized after installation; left it untouched "
-    "(run llm-hud uninstall --forget to abandon the saved state)"
-)
+_CONFLICT_MESSAGE = conflict_message("status_line")
 
 
 def _matches_original(
@@ -107,37 +110,15 @@ def _restore_items(current: list[str], state: dict[str, Any]) -> list[str] | Non
 def _recover_interrupted(
     state_path: Path, journal_path: Path, present: bool, items: list[str]
 ) -> None:
-    """Commit or roll back a provider transaction interrupted mid-write."""
-    journal = read_provider_journal(journal_path)
-    if journal is None:
-        return
-    previous = journal.get("previous_state")
-    pending = journal.get("pending_state")
-    if journal.get("op") == "install" and isinstance(pending, dict):
-        installed = pending.get("installed_items")
-        if present and isinstance(installed, list) and items == installed:
-            # The config write completed: commit the pending state.
-            atomic_write_provider_state(state_path, pending)
-        else:
-            restore_provider_state(
-                state_path, previous if isinstance(previous, dict) else None
-            )
-        journal_path.unlink(missing_ok=True)
-        return
-    if journal.get("op") == "uninstall" and isinstance(previous, dict):
-        installed = previous.get("installed_items")
-        if present and isinstance(installed, list) and items == installed:
-            # The config restore never happened: abort the uninstall.
-            atomic_write_provider_state(state_path, previous)
-        else:
-            state_path.unlink(missing_ok=True)
-        journal_path.unlink(missing_ok=True)
-        return
-    # Unrecognizable journal content: roll back and rely on state healing.
-    restore_provider_state(
-        state_path, previous if isinstance(previous, dict) else None
+    """Recover an interrupted transaction from the live config content."""
+
+    def config_matches_installed(state: dict[str, Any]) -> bool:
+        installed = state.get("installed_items")
+        return present and isinstance(installed, list) and items == installed
+
+    recover_interrupted_transaction(
+        state_path, journal_path, config_matches_installed
     )
-    journal_path.unlink(missing_ok=True)
 
 
 def _validate_installation_state(state: dict[str, Any]) -> None:
@@ -149,7 +130,7 @@ def _validate_installation_state(state: dict[str, Any]) -> None:
             raise StateFileError(f"installation state has no valid {key}")
 
 
-class CodexProvider(Provider):
+class CodexProvider(TransactionalProvider):
     id = "codex"
     command = "codex"
     capabilities = ProviderCapabilities(
@@ -163,13 +144,6 @@ class CodexProvider(Provider):
             "context",
         ),
     )
-
-    def install(self, command_path: str) -> Result:
-        try:
-            with ProviderLock(provider_state_path(self.id)):
-                return self._install_locked(command_path)
-        except OSError as error:
-            return Result(self.id, "error", str(error))
 
     def _install_locked(self, command_path: str) -> Result:
         del command_path
@@ -219,50 +193,32 @@ class CodexProvider(Provider):
             "original_items": original_items,
             "installed_items": installed,
         }
-        journal = {
-            "schema": 1,
-            "op": "install",
-            "previous_state": existing_state,
-            "pending_state": state,
-        }
-        state_written = False
         try:
             updated = set_array(text, "tui", "status_line", installed)
-            atomic_write_provider_state(journal_path, journal)
-            atomic_write_provider_state(state_path, state)
-            state_written = True
+        except (tomllib.TOMLDecodeError, ValueError) as error:
+            return Result(self.id, "error", str(error))
+
+        def write_config() -> None:
             atomic_write_text(
                 path,
                 updated,
                 expected_target=config_target,
                 expected_content=config_snapshot,
             )
-        except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
-            try:
-                if state_written:
-                    restore_provider_state(state_path, existing_state)
-                journal_path.unlink(missing_ok=True)
-            except OSError as rollback_error:
-                return Result(
-                    self.id,
-                    "error",
-                    f"{error}; also failed to restore installation state: "
-                    f"{rollback_error}",
-                )
-            status = "conflict" if isinstance(error, ContentChangedError) else "error"
-            return Result(self.id, status, str(error))
-        try:
-            journal_path.unlink(missing_ok=True)
-        except OSError:
-            pass  # the next operation recovers a stale journal
-        return Result(self.id, "installed", f"configured {path}")
 
-    def uninstall(self) -> Result:
-        try:
-            with ProviderLock(provider_state_path(self.id)):
-                return self._uninstall_locked()
-        except OSError as error:
-            return Result(self.id, "error", str(error))
+        failure = run_install_transaction(
+            self.id,
+            state_path,
+            journal_path,
+            previous_state=existing_state,
+            pending_state=state,
+            write_state=atomic_write_provider_state,
+            restore_state=restore_provider_state,
+            write_config=write_config,
+        )
+        if failure is not None:
+            return failure
+        return Result(self.id, "installed", f"configured {path}")
 
     def _uninstall_locked(self) -> Result:
         path = codex_config_path()
@@ -325,49 +281,39 @@ class CodexProvider(Provider):
                     "status_line already restored; removed installation state",
                 )
             return Result(self.id, "conflict", _CONFLICT_MESSAGE)
-        journal = {
-            "schema": 1,
-            "op": "uninstall",
-            "previous_state": state,
-            "pending_state": None,
-        }
         try:
             if not state.get("original_present") and not restored:
                 updated = remove_key(text, "tui", "status_line")
             else:
                 updated = set_array(text, "tui", "status_line", restored)
-            atomic_write_provider_state(journal_path, journal)
+        except (tomllib.TOMLDecodeError, ValueError) as error:
+            return Result(self.id, "error", str(error))
+
+        def write_config() -> None:
             atomic_write_text(
                 path,
                 updated,
                 expected_target=config_target,
                 expected_content=config_snapshot,
             )
-            state_path.unlink(missing_ok=True)
-            journal_path.unlink(missing_ok=True)
-        except ContentChangedError as error:
-            try:
-                journal_path.unlink(missing_ok=True)
-            except OSError as cleanup_error:
-                return Result(
-                    self.id,
-                    "error",
-                    f"{error}; also failed to clear transaction journal: "
-                    f"{cleanup_error}",
-                )
-            return Result(self.id, "conflict", str(error))
-        except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
-            return Result(self.id, "error", str(error))
+
+        failure = run_uninstall_transaction(
+            self.id,
+            state_path,
+            journal_path,
+            previous_state=state,
+            write_state=atomic_write_provider_state,
+            write_config=write_config,
+        )
+        if failure is not None:
+            return failure
         return Result(self.id, "uninstalled", f"restored {path}")
 
     def configured(self) -> tuple[bool, str]:
         path = codex_config_path()
-        journal_path = provider_journal_path(self.id)
-        if journal_path.is_file():
-            return False, (
-                f"interrupted transaction journal {journal_path}; "
-                "run llm-hud install or uninstall to recover it"
-            )
+        problem = self._interrupted_journal_problem()
+        if problem is not None:
+            return False, problem
         try:
             _, parsed = _load_config()
             _, items = _status_line(parsed)

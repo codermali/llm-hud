@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
+from pathlib import Path
+from typing import Any, Literal
 
 from llm_hud.paths import provider_journal_path, provider_state_path
-from llm_hud.storage import ProviderLock
+from llm_hud.storage import (
+    ContentChangedError,
+    ProviderLock,
+    atomic_write_provider_state,
+    read_provider_journal,
+    restore_provider_state,
+)
 
 
 RESULT_STATUSES = frozenset(
@@ -36,6 +44,149 @@ class ProviderCapabilities:
     custom_renderer: bool
     persistent_metrics: tuple[str, ...]
     on_demand_metrics: tuple[str, ...] = ()
+
+
+def conflict_message(field: str) -> str:
+    """The refusal shown when a managed field was customized after install."""
+    return (
+        f"{field} was customized after installation; left it untouched "
+        "(run llm-hud uninstall --forget to abandon the saved state)"
+    )
+
+
+def recover_interrupted_transaction(
+    state_path: Path,
+    journal_path: Path,
+    config_matches_installed: Callable[[dict[str, Any]], bool],
+) -> None:
+    """Commit or roll back a provider transaction interrupted mid-write.
+
+    A journal exists only between the first and last write of an
+    install/uninstall; whether the configuration write completed — decided by
+    ``config_matches_installed`` against the journaled state — chooses the
+    direction, so recovery is idempotent under repeated crashes.
+    """
+    journal = read_provider_journal(journal_path)
+    if journal is None:
+        return
+    previous = journal.get("previous_state")
+    pending = journal.get("pending_state")
+    if journal.get("op") == "install" and isinstance(pending, dict):
+        if config_matches_installed(pending):
+            # The configuration write completed: commit the pending state.
+            atomic_write_provider_state(state_path, pending)
+        else:
+            restore_provider_state(
+                state_path, previous if isinstance(previous, dict) else None
+            )
+        journal_path.unlink(missing_ok=True)
+        return
+    if journal.get("op") == "uninstall" and isinstance(previous, dict):
+        if config_matches_installed(previous):
+            # The configuration restore never happened: abort the uninstall.
+            atomic_write_provider_state(state_path, previous)
+        else:
+            state_path.unlink(missing_ok=True)
+        journal_path.unlink(missing_ok=True)
+        return
+    # Unrecognizable journal content: roll back and rely on state healing.
+    restore_provider_state(
+        state_path, previous if isinstance(previous, dict) else None
+    )
+    journal_path.unlink(missing_ok=True)
+
+
+def run_install_transaction(
+    provider_id: str,
+    state_path: Path,
+    journal_path: Path,
+    *,
+    previous_state: dict[str, Any] | None,
+    pending_state: dict[str, Any],
+    write_state: Callable[[Path, Any], None],
+    restore_state: Callable[[Path, dict[str, Any] | None], None],
+    write_config: Callable[[], None],
+) -> Result | None:
+    """Write journal, then state, then configuration; roll back on failure.
+
+    Returns ``None`` once the transaction committed so the caller supplies its
+    own success Result.  The state writers are parameters instead of imports
+    so each provider module stays the single seam through which all of its
+    state writes flow.
+    """
+    journal = {
+        "schema": 1,
+        "op": "install",
+        "previous_state": previous_state,
+        "pending_state": pending_state,
+    }
+    state_written = False
+    try:
+        write_state(journal_path, journal)
+        write_state(state_path, pending_state)
+        state_written = True
+        write_config()
+    except OSError as error:
+        try:
+            if state_written:
+                restore_state(state_path, previous_state)
+            journal_path.unlink(missing_ok=True)
+        except OSError as rollback_error:
+            return Result(
+                provider_id,
+                "error",
+                f"{error}; also failed to restore installation state: "
+                f"{rollback_error}",
+            )
+        status = "conflict" if isinstance(error, ContentChangedError) else "error"
+        return Result(provider_id, status, str(error))
+    try:
+        journal_path.unlink(missing_ok=True)
+    except OSError:
+        pass  # the next operation recovers a stale journal
+    return None
+
+
+def run_uninstall_transaction(
+    provider_id: str,
+    state_path: Path,
+    journal_path: Path,
+    *,
+    previous_state: dict[str, Any],
+    write_state: Callable[[Path, Any], None],
+    write_config: Callable[[], None],
+) -> Result | None:
+    """Write journal, restore configuration, then drop state and journal.
+
+    Returns ``None`` once the transaction committed so the caller supplies its
+    own success Result.  ``write_state`` is a parameter for the same reason as
+    in ``run_install_transaction``.
+    """
+    journal = {
+        "schema": 1,
+        "op": "uninstall",
+        "previous_state": previous_state,
+        "pending_state": None,
+    }
+    try:
+        write_state(journal_path, journal)
+        write_config()
+        state_path.unlink(missing_ok=True)
+        journal_path.unlink(missing_ok=True)
+    except ContentChangedError as error:
+        try:
+            journal_path.unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            return Result(
+                provider_id,
+                "error",
+                f"{error}; also failed to clear transaction journal: "
+                f"{cleanup_error}",
+            )
+        return Result(provider_id, "conflict", str(error))
+    except OSError as error:
+        return Result(provider_id, "error", str(error))
+    return None
 
 
 class Provider:
@@ -77,3 +228,37 @@ class Provider:
     def render(self, raw: bytes, no_color: bool = False) -> str:
         del raw, no_color
         raise NotImplementedError(f"{self.id} does not support external HUD rendering")
+
+
+class TransactionalProvider(Provider):
+    """A provider whose install/uninstall are journaled config transactions."""
+
+    def install(self, command_path: str) -> Result:
+        try:
+            with ProviderLock(provider_state_path(self.id)):
+                return self._install_locked(command_path)
+        except OSError as error:
+            return Result(self.id, "error", str(error))
+
+    def _install_locked(self, command_path: str) -> Result:
+        raise NotImplementedError
+
+    def uninstall(self) -> Result:
+        try:
+            with ProviderLock(provider_state_path(self.id)):
+                return self._uninstall_locked()
+        except OSError as error:
+            return Result(self.id, "error", str(error))
+
+    def _uninstall_locked(self) -> Result:
+        raise NotImplementedError
+
+    def _interrupted_journal_problem(self) -> str | None:
+        """configured() must fail while a transaction awaits recovery."""
+        journal_path = provider_journal_path(self.id)
+        if not journal_path.is_file():
+            return None
+        return (
+            f"interrupted transaction journal {journal_path}; "
+            "run llm-hud install or uninstall to recover it"
+        )

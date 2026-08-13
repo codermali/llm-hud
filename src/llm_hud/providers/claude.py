@@ -16,14 +16,20 @@ from llm_hud.paths import (
     provider_journal_path,
     provider_state_path,
 )
-from llm_hud.providers.base import Provider, ProviderCapabilities, Result
+from llm_hud.providers.base import (
+    ProviderCapabilities,
+    Result,
+    TransactionalProvider,
+    conflict_message,
+    recover_interrupted_transaction,
+    run_install_transaction,
+    run_uninstall_transaction,
+)
 from llm_hud.storage import (
     ContentChangedError,
-    ProviderLock,
     StateFileError,
     atomic_write_json,
     atomic_write_provider_state,
-    read_provider_journal,
     read_provider_state,
     read_text_snapshot,
     resolve_file_target,
@@ -37,10 +43,7 @@ from llm_hud.storage import (
 # release must keep reading every schema the previous release wrote.  Bump the
 # written schema only together with tests/test_state_abi.py.
 STATE_SCHEMAS = frozenset((1, 2))
-_CONFLICT_MESSAGE = (
-    "statusLine was customized after installation; left it untouched "
-    "(run llm-hud uninstall --forget to abandon the saved state)"
-)
+_CONFLICT_MESSAGE = conflict_message("statusLine")
 
 
 def _matches_original(settings: dict[str, Any], state: dict[str, Any]) -> bool:
@@ -56,42 +59,15 @@ def _matches_original(settings: dict[str, Any], state: dict[str, Any]) -> bool:
 def _recover_interrupted(
     state_path: Path, journal_path: Path, settings: dict[str, Any]
 ) -> None:
-    """Commit or roll back a provider transaction interrupted mid-write.
+    """Recover an interrupted transaction from the live settings content."""
 
-    A journal exists only between the first and last write of an
-    install/uninstall; whether the settings write completed decides the
-    direction, so recovery is idempotent under repeated crashes.
-    """
-    journal = read_provider_journal(journal_path)
-    if journal is None:
-        return
-    previous = journal.get("previous_state")
-    pending = journal.get("pending_state")
-    if journal.get("op") == "install" and isinstance(pending, dict):
-        installed = _installed_status_line_from_state(pending)
-        if installed is not None and settings.get("statusLine") == installed:
-            # The settings write completed: commit the pending state.
-            atomic_write_provider_state(state_path, pending)
-        else:
-            restore_provider_state(
-                state_path, previous if isinstance(previous, dict) else None
-            )
-        journal_path.unlink(missing_ok=True)
-        return
-    if journal.get("op") == "uninstall" and isinstance(previous, dict):
-        installed = _installed_status_line_from_state(previous)
-        if installed is not None and settings.get("statusLine") == installed:
-            # The settings restore never happened: abort the uninstall.
-            atomic_write_provider_state(state_path, previous)
-        else:
-            state_path.unlink(missing_ok=True)
-        journal_path.unlink(missing_ok=True)
-        return
-    # Unrecognizable journal content: roll back and rely on state healing.
-    restore_provider_state(
-        state_path, previous if isinstance(previous, dict) else None
+    def config_matches_installed(state: dict[str, Any]) -> bool:
+        installed = _installed_status_line_from_state(state)
+        return installed is not None and settings.get("statusLine") == installed
+
+    recover_interrupted_transaction(
+        state_path, journal_path, config_matches_installed
     )
-    journal_path.unlink(missing_ok=True)
 
 
 def _command_argv(command: object) -> tuple[str, str, str] | None:
@@ -382,7 +358,7 @@ def render(raw: bytes, color: bool | None = None) -> str:
     return f"{delegated}\n{footer}" if delegated else footer
 
 
-class ClaudeProvider(Provider):
+class ClaudeProvider(TransactionalProvider):
     id = "claude"
     command = "claude"
     capabilities = ProviderCapabilities(
@@ -390,13 +366,6 @@ class ClaudeProvider(Provider):
         custom_renderer=True,
         persistent_metrics=("model", "cwd", "quota"),
     )
-
-    def install(self, command_path: str) -> Result:
-        try:
-            with ProviderLock(provider_state_path(self.id)):
-                return self._install_locked(command_path)
-        except OSError as error:
-            return Result(self.id, "error", str(error))
 
     def _install_locked(self, command_path: str) -> Result:
         settings_path = claude_settings_path()
@@ -457,17 +426,7 @@ class ClaudeProvider(Provider):
             "installed_command": installed_command,
             "installed_status_line": configured,
         }
-        journal = {
-            "schema": 1,
-            "op": "install",
-            "previous_state": existing_state,
-            "pending_state": state,
-        }
-        state_written = False
-        try:
-            atomic_write_provider_state(journal_path, journal)
-            atomic_write_provider_state(state_path, state)
-            state_written = True
+        def write_config() -> None:
             settings["statusLine"] = configured
             atomic_write_json(
                 settings_path,
@@ -476,32 +435,20 @@ class ClaudeProvider(Provider):
                 expected_target=settings_target,
                 expected_content=settings_snapshot,
             )
-        except OSError as error:
-            try:
-                if state_written:
-                    restore_provider_state(state_path, existing_state)
-                journal_path.unlink(missing_ok=True)
-            except OSError as rollback_error:
-                return Result(
-                    self.id,
-                    "error",
-                    f"{error}; also failed to restore installation state: "
-                    f"{rollback_error}",
-                )
-            status = "conflict" if isinstance(error, ContentChangedError) else "error"
-            return Result(self.id, status, str(error))
-        try:
-            journal_path.unlink(missing_ok=True)
-        except OSError:
-            pass  # the next operation recovers a stale journal
-        return Result(self.id, "installed", f"configured {settings_path}")
 
-    def uninstall(self) -> Result:
-        try:
-            with ProviderLock(provider_state_path(self.id)):
-                return self._uninstall_locked()
-        except OSError as error:
-            return Result(self.id, "error", str(error))
+        failure = run_install_transaction(
+            self.id,
+            state_path,
+            journal_path,
+            previous_state=existing_state,
+            pending_state=state,
+            write_state=atomic_write_provider_state,
+            restore_state=restore_provider_state,
+            write_config=write_config,
+        )
+        if failure is not None:
+            return failure
+        return Result(self.id, "installed", f"configured {settings_path}")
 
     def _uninstall_locked(self) -> Result:
         settings_path = claude_settings_path()
@@ -551,14 +498,8 @@ class ClaudeProvider(Provider):
             settings["statusLine"] = state.get("original_status_line")
         else:
             settings.pop("statusLine", None)
-        journal = {
-            "schema": 1,
-            "op": "uninstall",
-            "previous_state": state,
-            "pending_state": None,
-        }
-        try:
-            atomic_write_provider_state(journal_path, journal)
+
+        def write_config() -> None:
             atomic_write_json(
                 settings_path,
                 settings,
@@ -566,31 +507,24 @@ class ClaudeProvider(Provider):
                 expected_target=settings_target,
                 expected_content=settings_snapshot,
             )
-            state_path.unlink(missing_ok=True)
-            journal_path.unlink(missing_ok=True)
-        except ContentChangedError as error:
-            try:
-                journal_path.unlink(missing_ok=True)
-            except OSError as cleanup_error:
-                return Result(
-                    self.id,
-                    "error",
-                    f"{error}; also failed to clear transaction journal: "
-                    f"{cleanup_error}",
-                )
-            return Result(self.id, "conflict", str(error))
-        except OSError as error:
-            return Result(self.id, "error", str(error))
+
+        failure = run_uninstall_transaction(
+            self.id,
+            state_path,
+            journal_path,
+            previous_state=state,
+            write_state=atomic_write_provider_state,
+            write_config=write_config,
+        )
+        if failure is not None:
+            return failure
         return Result(self.id, "uninstalled", f"restored {settings_path}")
 
     def configured(self) -> tuple[bool, str]:
         path = claude_settings_path()
-        journal_path = provider_journal_path(self.id)
-        if journal_path.is_file():
-            return False, (
-                f"interrupted transaction journal {journal_path}; "
-                "run llm-hud install or uninstall to recover it"
-            )
+        problem = self._interrupted_journal_problem()
+        if problem is not None:
+            return False, problem
         try:
             settings = _load_settings(path)
         except (OSError, json.JSONDecodeError, ValueError) as error:
