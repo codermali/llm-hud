@@ -19,7 +19,7 @@ from llm_hud.storage import JOURNAL_SCHEMAS
 from tests.support import Environment
 
 
-# Schemas written by the previous release (v0.3.2), plus the schemas written by
+# Schemas written by the previous release (v0.4.0), plus the schemas written by
 # the current tree. Advance these pins after every release: the current runtime
 # must continue to read N-1 state during an upgrade.
 PREVIOUS_RELEASE_WRITES = {"claude": 2, "codex": 1}
