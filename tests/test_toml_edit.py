@@ -37,6 +37,18 @@ class SetArrayTests(unittest.TestCase):
         with self.assertRaises((tomllib.TOMLDecodeError, ValueError)):
             set_array('[[tui]]\nname = "x"\n', "tui", "status_line", ["a"])
 
+    def test_values_outside_the_basic_multilingual_plane(self):
+        # json.dumps-style surrogate-pair escapes are invalid TOML; non-BMP
+        # characters must survive a set_array round trip.
+        result = set_array("[tui]\n", "tui", "status_line", ["emoji-😀", "汉字"])
+        parsed = tomllib.loads(result)
+        self.assertEqual(parsed["tui"]["status_line"], ["emoji-😀", "汉字"])
+
+    def test_values_with_control_characters_and_quotes(self):
+        values = ['tab\there', 'quote-"-slash-\\', "del-\x7f", "bell-\x07"]
+        parsed = tomllib.loads(set_array("[tui]\n", "tui", "status_line", values))
+        self.assertEqual(parsed["tui"]["status_line"], values)
+
     def test_file_without_trailing_newline(self):
         result = set_array("[tui]\nnotifications = true", "tui", "status_line", ["a"])
         parsed = tomllib.loads(result)

@@ -109,6 +109,26 @@ class CodexProviderTests(unittest.TestCase):
                 self.assertNotIn("status_line", parsed["tui"])
                 self.assertTrue(parsed["tui"]["notifications"])
 
+    def test_non_bmp_status_line_items_survive_install_and_uninstall(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            config.write_text(
+                '[tui]\nstatus_line = ["current-dir", "emoji-😀"]\n',
+                encoding="utf-8",
+            )
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = CodexProvider()
+                installed = provider.install("ignored")
+                self.assertEqual(installed.status, "installed", installed.message)
+                self.assertEqual(status_line(config), [*HUD_ITEMS, "emoji-😀"])
+                uninstalled = provider.uninstall()
+                self.assertEqual(uninstalled.status, "uninstalled", uninstalled.message)
+            self.assertEqual(status_line(config), ["current-dir", "emoji-😀"])
+
     def test_uninstall_preserves_items_added_later(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

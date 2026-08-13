@@ -17,7 +17,6 @@ duplicate-table parse error rather than a silent write to the wrong place.
 
 from __future__ import annotations
 
-import json
 import math
 import re
 from dataclasses import dataclass
@@ -186,8 +185,38 @@ def _newline(lines: list[str]) -> str:
     return "\r\n" if any(line.endswith("\r\n") for line in lines) else "\n"
 
 
+_STRING_ESCAPES = {
+    "\b": "\\b",
+    "\t": "\\t",
+    "\n": "\\n",
+    "\f": "\\f",
+    "\r": "\\r",
+    '"': '\\"',
+    "\\": "\\\\",
+}
+
+
+def _encode_string(value: str) -> str:
+    """Encode a TOML basic string.
+
+    json.dumps would emit UTF-16 surrogate-pair escapes for characters outside
+    the BMP, which TOML rejects as non-scalar escaped values.
+    """
+    encoded = ['"']
+    for char in value:
+        escape = _STRING_ESCAPES.get(char)
+        if escape is not None:
+            encoded.append(escape)
+        elif ord(char) < 0x20 or ord(char) == 0x7F:
+            encoded.append(f"\\u{ord(char):04X}")
+        else:
+            encoded.append(char)
+    encoded.append('"')
+    return "".join(encoded)
+
+
 def _format_array(key: str, values: list[str], indent: str = "", newline: str = "\n") -> str:
-    encoded = ", ".join(json.dumps(value) for value in values)
+    encoded = ", ".join(_encode_string(value) for value in values)
     return f"{indent}{key} = [{encoded}]{newline}"
 
 
