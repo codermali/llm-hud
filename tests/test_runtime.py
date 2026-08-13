@@ -304,6 +304,22 @@ class ActivationTests(unittest.TestCase):
                 self.assertFalse((root / LAYOUT_MARKER_NAME).exists())
                 self.assertTrue(reserved.exists())
 
+    @unittest.skipIf(os.name == "nt", "POSIX FIFOs")
+    def test_owned_text_rejects_a_fifo_swapped_in_after_lstat(self):
+        # Without O_NONBLOCK and the fstat identity re-check, the open would
+        # block forever on a writerless FIFO instead of failing closed.
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "marker"
+            target.write_text("x")
+            before_swap = target.lstat()
+            target.unlink()
+            os.mkfifo(target)
+            with mock.patch.object(Path, "lstat", return_value=before_swap):
+                with self.assertRaisesRegex(
+                    RuntimeLayoutError, "changed while reading"
+                ):
+                    runtime_module._read_owned_text(target, "marker")
+
     def test_layout_reclaims_an_empty_leftover_update_lock(self):
         # A crash between creating the update lock and writing the layout
         # marker must not wedge the root until the lock is deleted by hand.

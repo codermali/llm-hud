@@ -182,13 +182,24 @@ def read_provider_state(
     if not stat.S_ISREG(metadata.st_mode):
         raise StateFileError(f"installation state is not a regular file: {path}")
 
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    # O_NONBLOCK keeps a FIFO swapped in after the lstat from blocking the
+    # open; the fstat identity check below then rejects it. Reads from a
+    # regular file are unaffected.
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     try:
         descriptor = os.open(path, flags)
         with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
-            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            opened = os.fstat(handle.fileno())
+            if not stat.S_ISREG(opened.st_mode) or (
+                opened.st_dev,
+                opened.st_ino,
+            ) != (metadata.st_dev, metadata.st_ino):
                 raise StateFileError(
-                    f"installation state is not a regular file: {path}"
+                    f"installation state changed while reading: {path}"
                 )
             payload = json.load(handle)
     except (UnicodeError, json.JSONDecodeError) as error:

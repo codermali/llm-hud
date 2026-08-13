@@ -121,11 +121,23 @@ def _read_owned_text(path: Path, description: str) -> str | None:
         raise RuntimeLayoutError(f"cannot inspect {description} {path}: {error}") from error
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         raise RuntimeLayoutError(f"{description} is not a regular managed file: {path}")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    # O_NONBLOCK keeps a FIFO swapped in after the lstat from blocking the
+    # open; the fstat identity check below then rejects it. Reads from a
+    # regular file are unaffected.
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     descriptor = -1
     try:
         descriptor = os.open(path, flags)
         opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or (
+            opened.st_dev,
+            opened.st_ino,
+        ) != (metadata.st_dev, metadata.st_ino):
+            raise RuntimeLayoutError(f"{description} changed while reading: {path}")
         if opened.st_size > MAX_MANAGED_TEXT_SIZE:
             raise RuntimeLayoutError(f"{description} is too large: {path}")
         chunks: list[bytes] = []

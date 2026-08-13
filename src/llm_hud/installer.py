@@ -229,10 +229,23 @@ def _read_regular_bytes(path: Path, description: str) -> bytes:
     before = _metadata(path, description)
     if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
         raise RuntimeLayoutError(f"{description} is not a regular file: {path}")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    # O_NONBLOCK keeps a FIFO swapped in after the lstat from blocking the
+    # open; the fstat identity check below then rejects it. Reads from a
+    # regular file are unaffected.
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     descriptor = -1
     try:
         descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or (
+            opened.st_dev,
+            opened.st_ino,
+        ) != (before.st_dev, before.st_ino):
+            raise RuntimeLayoutError(f"{description} changed while reading: {path}")
         chunks: list[bytes] = []
         while True:
             chunk = os.read(descriptor, 1024 * 1024)
