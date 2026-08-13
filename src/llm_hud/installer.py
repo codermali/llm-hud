@@ -111,9 +111,18 @@ def _metadata(path: Path, description: str) -> os.stat_result:
 
 def _dangerous_install_roots() -> set[Path]:
     candidates = [Path("/")]
-    home_value = os.environ.get("HOME")
-    if home_value:
-        home = Path(home_value)
+    homes = []
+    # HOME may be unset outside Git Bash on native Windows; protect every
+    # home the platform can name, not only the POSIX variable.
+    for variable in ("HOME", "USERPROFILE"):
+        value = os.environ.get(variable)
+        if value:
+            homes.append(Path(value))
+    try:
+        homes.append(Path.home())
+    except (OSError, RuntimeError):
+        pass
+    for home in homes:
         candidates.extend(
             (home, home / ".local", home / ".local/share", home / ".local/bin")
         )

@@ -408,7 +408,19 @@ class RuntimeInstallerTests(unittest.TestCase):
                     claim_install_root(home)
             self.assertFalse((home / INSTALL_MARKER_NAME).exists())
 
-    def test_claim_is_idempotent_on_an_owned_root(self):
+    def test_claim_rejects_userprofile_when_home_is_unset(self):
+        # Outside Git Bash, native Windows sets USERPROFILE but not HOME; the
+        # unsafe-root list must still cover that home.
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            target = home / ".local" / "share"
+            target.mkdir(parents=True)
+            environment = {"USERPROFILE": str(home)}
+            with mock.patch.dict(os.environ, environment, clear=False):
+                os.environ.pop("HOME", None)
+                with self.assertRaisesRegex(RuntimeLayoutError, "unsafe install root"):
+                    claim_install_root(target)
+            self.assertFalse((target / INSTALL_MARKER_NAME).exists())
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "runtime"
             root.mkdir()
