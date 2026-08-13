@@ -5,6 +5,7 @@ import math
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -283,7 +284,29 @@ def render_footer(payload: dict[str, Any], color: bool = True) -> str:
     return render_hud(snapshot_from_payload(payload), color=color)
 
 
-def _delegate_output(raw: bytes, state: dict[str, Any]) -> str:
+def _kill_delegated(process: subprocess.Popen) -> None:
+    """Terminate a timed-out delegated command together with its descendants.
+
+    Killing only the direct child leaves the user's actual status-line program
+    running: orphaned on POSIX, and on Windows still holding the inherited
+    stdout pipe open, which would block past the documented five-second bound.
+    """
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        process.kill()
+        return
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except OSError:
+        process.kill()
+
+
+def _delegate_output(raw: bytes, state: dict[str, Any], timeout: float = 5.0) -> str:
     original = state.get("original_status_line")
     if not isinstance(original, dict):
         return ""
@@ -292,25 +315,35 @@ def _delegate_output(raw: bytes, state: dict[str, Any]) -> str:
         return ""
     delegated_command: str | list[str] = command
     use_shell = True
+    extra: dict[str, Any] = {"start_new_session": True}
     if os.name == "nt":
         bash = shutil.which("bash")
         if bash is None:
             return ""
         delegated_command = [bash, "-c", command]
         use_shell = False
+        extra = {}
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             delegated_command,
             shell=use_shell,
-            input=raw,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            timeout=5,
-            check=False,
+            **extra,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError:
         return ""
-    return completed.stdout.decode("utf-8", errors="replace").rstrip("\r\n")
+    try:
+        stdout, _ = process.communicate(input=raw, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        _kill_delegated(process)
+        try:
+            process.communicate(timeout=1)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            pass
+        return ""
+    return stdout.decode("utf-8", errors="replace").rstrip("\r\n")
 
 
 def render(raw: bytes, color: bool | None = None) -> str:

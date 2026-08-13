@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 import math
 import os
+import shlex
 import shutil
+import signal
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -228,7 +231,8 @@ class ClaudeProviderTests(unittest.TestCase):
         self.assertEqual(command, "'C:/Users/A User/bin/llm-hud' render claude")
 
     def test_windows_delegation_runs_the_original_command_in_git_bash(self):
-        completed = mock.Mock(stdout=b"existing\r\n")
+        process = mock.Mock()
+        process.communicate.return_value = (b"existing\r\n", None)
         state = {
             "original_status_line": {
                 "type": "command",
@@ -240,21 +244,20 @@ class ClaudeProviderTests(unittest.TestCase):
             mock.patch.object(claude_module.os, "name", "nt"),
             mock.patch.object(claude_module.shutil, "which", return_value=bash),
             mock.patch.object(
-                claude_module.subprocess, "run", return_value=completed
-            ) as run,
+                claude_module.subprocess, "Popen", return_value=process
+            ) as popen,
         ):
             output = claude_module._delegate_output(b"{}", state)
 
         self.assertEqual(output, "existing")
-        run.assert_called_once_with(
+        popen.assert_called_once_with(
             [bash, "-c", "printf existing"],
             shell=False,
-            input=b"{}",
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            timeout=5,
-            check=False,
         )
+        process.communicate.assert_called_once_with(input=b"{}", timeout=5.0)
 
     def test_windows_delegation_fails_softly_without_git_bash(self):
         state = {
@@ -266,12 +269,42 @@ class ClaudeProviderTests(unittest.TestCase):
         with (
             mock.patch.object(claude_module.os, "name", "nt"),
             mock.patch.object(claude_module.shutil, "which", return_value=None),
-            mock.patch.object(claude_module.subprocess, "run") as run,
+            mock.patch.object(claude_module.subprocess, "Popen") as popen,
         ):
             output = claude_module._delegate_output(b"{}", state)
 
         self.assertEqual(output, "")
-        run.assert_not_called()
+        popen.assert_not_called()
+
+    @unittest.skipIf(os.name == "nt", "POSIX process groups")
+    def test_timed_out_delegation_kills_the_whole_process_tree(self):
+        # Killing only the shell wrapper would orphan the user's actual
+        # status-line program, leaking one process per render tick.
+        with tempfile.TemporaryDirectory() as directory:
+            pid_file = Path(directory) / "pid"
+            state = {
+                "original_status_line": {
+                    "type": "command",
+                    "command": (
+                        f"/bin/sh -c 'echo $$ > {shlex.quote(str(pid_file))}; "
+                        "exec sleep 30'"
+                    ),
+                }
+            }
+            output = claude_module._delegate_output(b"{}", state, timeout=0.5)
+            self.assertEqual(output, "")
+            self.assertTrue(pid_file.is_file())
+            grandchild = int(pid_file.read_text())
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(grandchild, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                os.kill(grandchild, signal.SIGKILL)
+                self.fail("delegated grandchild survived the timeout")
 
     def test_uninstall_does_not_replace_later_user_change(self):
         with tempfile.TemporaryDirectory() as directory:
