@@ -652,6 +652,44 @@ class ClaudeProviderTests(unittest.TestCase):
                 self.assertEqual(settings.read_text(), configured)
                 self.assertEqual(provider.forget().status, "skipped")
 
+    def test_forget_discloses_a_removed_transaction_journal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "settings.json"
+            providers_dir = root / "state" / "providers"
+            journal_path = providers_dir / "claude.journal.json"
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = ClaudeProvider()
+
+                # A stale journal without state: the crash window between an
+                # uninstall's settings restore and its state cleanup.
+                providers_dir.mkdir(parents=True)
+                journal_path.write_text("{}")
+                result = provider.forget()
+                self.assertEqual(result.status, "forgotten")
+                self.assertIn("interrupted transaction journal", result.message)
+                self.assertIn("no installation state", result.message)
+                self.assertFalse(journal_path.exists())
+                self.assertEqual(provider.forget().status, "skipped")
+
+                # State plus a stale journal: both removals are disclosed.
+                provider.install("/opt/llm-hud")
+                journal_path.write_text("{}")
+                result = provider.forget()
+                self.assertEqual(result.status, "forgotten")
+                self.assertIn("abandoned installation state", result.message)
+                self.assertIn("interrupted transaction journal", result.message)
+                self.assertFalse(journal_path.exists())
+
+                # Without a journal the message stays unchanged.
+                provider.install("/opt/llm-hud")
+                result = provider.forget()
+                self.assertEqual(result.status, "forgotten")
+                self.assertNotIn("journal", result.message)
+
     def test_schema_one_state_is_safely_reconstructed_on_uninstall(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

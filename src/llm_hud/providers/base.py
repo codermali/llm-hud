@@ -212,14 +212,34 @@ class Provider:
     def forget(self) -> Result:
         """Abandon saved installation state without touching provider config."""
         path = provider_state_path(self.id)
+        journal_path = provider_journal_path(self.id)
+        journal_removed = False
         try:
             with ProviderLock(path):
-                provider_journal_path(self.id).unlink(missing_ok=True)
+                try:
+                    journal_path.unlink()
+                    journal_removed = True
+                except FileNotFoundError:
+                    pass
                 path.unlink()
         except FileNotFoundError:
+            if journal_removed:
+                return Result(
+                    self.id,
+                    "forgotten",
+                    f"abandoned interrupted transaction journal {journal_path}; "
+                    "no installation state",
+                )
             return Result(self.id, "skipped", "no installation state")
         except OSError as error:
             return Result(self.id, "error", str(error))
+        if journal_removed:
+            return Result(
+                self.id,
+                "forgotten",
+                f"abandoned installation state {path} and its interrupted "
+                "transaction journal",
+            )
         return Result(self.id, "forgotten", f"abandoned installation state {path}")
 
     def configured(self) -> tuple[bool, str]:
