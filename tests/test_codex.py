@@ -562,13 +562,90 @@ class CodexProviderTests(unittest.TestCase):
             config.write_text(
                 set_array("", "tui", "status_line", HUD_ITEMS)
             )
-            with Environment(LLM_HUD_CODEX_CONFIG=str(config)):
-                configured, detail = CodexProvider().configured()
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = CodexProvider()
+                self.assertEqual(provider.install("ignored").status, "installed")
+                configured, detail = provider.configured()
 
             self.assertTrue(configured)
             self.assertIn("base user config", detail)
             self.assertIn(".codex/config.toml", detail)
             self.assertIn("--profile", detail)
+
+    def test_configured_requires_installation_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            config.write_text('[tui]\nstatus_line = ["current-dir"]\n')
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = CodexProvider()
+                self.assertEqual(provider.install("ignored").status, "installed")
+                self.assertTrue(provider.configured()[0])
+
+                self.assertEqual(provider.forget().status, "forgotten")
+                configured, detail = provider.configured()
+
+            self.assertFalse(configured)
+            self.assertIn("installation state is missing", detail)
+            self.assertIn("run llm-hud install to repair it", detail)
+
+    def test_configured_reports_status_line_changed_after_installation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            config.write_text('[tui]\nstatus_line = ["git-branch"]\n')
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = CodexProvider()
+                self.assertEqual(provider.install("ignored").status, "installed")
+                # The HUD items are still at the front, but the preserved
+                # original item was removed after installation.
+                config.write_text(
+                    set_array(config.read_text(), "tui", "status_line", HUD_ITEMS)
+                )
+                configured, detail = provider.configured()
+
+                self.assertFalse(configured)
+                self.assertIn("changed after installation", detail)
+
+                # Items appended after installation are not drift: uninstall
+                # would still restore the original around them.
+                config.write_text(
+                    set_array(
+                        config.read_text(),
+                        "tui",
+                        "status_line",
+                        [*HUD_ITEMS, "git-branch", "later-item"],
+                    )
+                )
+                configured, detail = provider.configured()
+
+            self.assertTrue(configured, detail)
+
+    def test_configured_surfaces_unreadable_installation_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            config.write_text(set_array("", "tui", "status_line", HUD_ITEMS))
+            state_path = root / "state" / "providers" / "codex.json"
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text(json.dumps({"schema": 999}))
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                configured, detail = CodexProvider().configured()
+
+            self.assertFalse(configured)
+            self.assertIn("newer than supported", detail)
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ from llm_hud.cli import (
     command_doctor,
 )
 from llm_hud.providers import provider_by_id, providers
-from llm_hud.providers.codex import HUD_ITEMS
+from llm_hud.providers.codex import CodexProvider, HUD_ITEMS
 from llm_hud.providers.claude import ClaudeProvider
 from tests.support import Environment
 
@@ -233,6 +233,9 @@ class DoctorCommandTests(unittest.TestCase):
                 LLM_HUD_CODEX_CONFIG=str(config),
                 LLM_HUD_STATE_DIR=str(root / "state"),
             ):
+                self.assertEqual(
+                    CodexProvider().install("ignored").status, "installed"
+                )
                 buffer = io.StringIO()
                 with contextlib.redirect_stdout(buffer):
                     result = command_doctor(None)  # type: ignore[arg-type]

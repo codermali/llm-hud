@@ -319,8 +319,27 @@ class CodexProvider(TransactionalProvider):
             _, items = _status_line(parsed)
         except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
             return False, str(error)
+        try:
+            state = read_provider_state(
+                provider_state_path(self.id), supported_schemas=STATE_SCHEMAS
+            )
+            if state is not None:
+                validate_state_path(state, "config_path", path)
+                _validate_installation_state(state)
+        except StateFileError as error:
+            return False, str(error)
         detail = (
             f"{path}; checked base user config only; project .codex/config.toml "
             "and --profile layers may override it at runtime"
         )
-        return items[: len(HUD_ITEMS)] == HUD_ITEMS, detail
+        if items[: len(HUD_ITEMS)] != HUD_ITEMS:
+            return False, detail
+        if state is None:
+            return (
+                False,
+                f"LLM HUD status_line is present in {path}, but installation "
+                "state is missing; run llm-hud install to repair it",
+            )
+        if _restore_items(items, state) is None:
+            return False, f"status_line changed after installation in {path}"
+        return True, detail
