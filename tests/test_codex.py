@@ -14,7 +14,9 @@ from tests.support import Environment
 
 
 def status_line(path: Path):
-    return tomllib.loads(path.read_text())["tui"].get("status_line")
+    # An explicit encoding: the default is the ANSI code page on Windows,
+    # which turns non-ASCII status_line items into mojibake.
+    return tomllib.loads(path.read_text(encoding="utf-8"))["tui"].get("status_line")
 
 
 class CodexProviderTests(unittest.TestCase):
