@@ -953,10 +953,20 @@ def install_checkout_launcher(launcher: Path, python: Path, command: Path) -> No
         ) from error
     if launcher.is_relative_to(checkout_root):
         raise RuntimeLayoutError("external launcher must be outside the source checkout")
-    content = _read_launcher_content(launcher)
-    if content is not None and not _known_launcher(content, command):
+    # Snapshot once and write against it: a second independent read would
+    # let an unmanaged file that appeared in between be replaced unchecked.
+    before = _snapshot_regular_file(
+        launcher,
+        "external launcher",
+        maximum_size=MAX_LAUNCHER_SIZE,
+    )
+    if before.content is not None and not _known_launcher(before.content, command):
         raise RuntimeLayoutError(f"refusing to replace unmanaged launcher: {launcher}")
-    _write_launcher_file(launcher, managed_launcher_content(python, command).encode("utf-8"))
+    _write_launcher_file(
+        launcher,
+        managed_launcher_content(python, command).encode("utf-8"),
+        expected=before,
+    )
 
 
 def _validate_python_cache(path: Path) -> None:

@@ -745,6 +745,41 @@ class RuntimeInstallerTests(unittest.TestCase):
                 0,
             )
 
+    def test_checkout_launcher_rejects_a_file_appearing_after_the_snapshot(self):
+        # The unmanaged-launcher check and the write must share one snapshot:
+        # a file that appears in between is unvalidated and must not be
+        # replaced.
+        with tempfile.TemporaryDirectory() as directory:
+            launcher = Path(directory) / "bin" / "llm-hud"
+            launcher.parent.mkdir()
+            command = ROOT / "bin" / "llm-hud"
+            absent = installer_module._FileSnapshot(
+                content=None, identity=None, mode=None
+            )
+            real_snapshot = installer_module._snapshot_regular_file
+            first_call = [True]
+
+            def snapshot_then_appear(path, description, **kwargs):
+                # The launcher path is canonicalized first, so match on the
+                # call order rather than comparing against the raw path.
+                if first_call and description == "external launcher":
+                    first_call.clear()
+                    path.write_text("#!/bin/sh\nunmanaged\n")
+                    return absent
+                return real_snapshot(path, description, **kwargs)
+
+            with mock.patch.object(
+                installer_module,
+                "_snapshot_regular_file",
+                side_effect=snapshot_then_appear,
+            ):
+                with self.assertRaisesRegex(RuntimeLayoutError, "changed while"):
+                    install_checkout_launcher(
+                        launcher, Path(sys.executable), command
+                    )
+
+            self.assertEqual(launcher.read_text(), "#!/bin/sh\nunmanaged\n")
+
     def test_checkout_launcher_must_be_outside_the_checkout(self):
         with tempfile.TemporaryDirectory() as directory:
             checkout = Path(directory) / "checkout"
