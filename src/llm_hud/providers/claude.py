@@ -311,7 +311,13 @@ def _delegate_output(raw: bytes, state: dict[str, Any], timeout: float = 5.0) ->
     if not isinstance(original, dict):
         return ""
     command = original.get("command")
-    if not isinstance(command, str) or not command or _is_llm_hud_command(command):
+    if (
+        not isinstance(command, str)
+        or not command
+        or _is_llm_hud_command(
+            command, installed_command=state.get("installed_command")
+        )
+    ):
         return ""
     delegated_command: str | list[str] = command
     use_shell = True
@@ -423,7 +429,11 @@ class ClaudeProvider(Provider):
             # revert); both are safe to configure from the saved original.
             original_present = bool(existing_state.get("original_present"))
             original_status_line = existing_state.get("original_status_line")
-        elif _is_llm_hud_command(current_command):
+        elif _is_llm_hud_command(
+            current_command, installed_command=installed_command
+        ):
+            # Recognize our own renderer even under a custom launcher name so
+            # a reinstall after --forget cannot record it as the original.
             original_present = False
             original_status_line = None
         else:

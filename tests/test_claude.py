@@ -306,6 +306,41 @@ class ClaudeProviderTests(unittest.TestCase):
                 os.kill(grandchild, signal.SIGKILL)
                 self.fail("delegated grandchild survived the timeout")
 
+    def test_reinstall_after_forget_recognizes_a_custom_launcher_name(self):
+        # A custom LLM_HUD_COMMAND_PATH basename is only recognizable through
+        # installed_command; recording our own renderer as the "original"
+        # would delegate every render to itself recursively.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "settings.json"
+            settings.write_text("{}")
+            custom = str(root / "bin" / "hud")
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                provider = ClaudeProvider()
+                self.assertEqual(provider.install(custom).status, "installed")
+                self.assertEqual(provider.forget().status, "forgotten")
+                self.assertEqual(provider.install(custom).status, "installed")
+                state = json.loads(
+                    (root / "state" / "providers" / "claude.json").read_text()
+                )
+                self.assertFalse(state["original_present"])
+                self.assertIsNone(state["original_status_line"])
+
+    def test_delegation_never_reexecutes_the_installed_renderer(self):
+        command = shlex.join(("/opt/custom/hud", "render", "claude"))
+        state = {
+            "original_status_line": {"type": "command", "command": command},
+            "installed_command": command,
+        }
+        with mock.patch.object(claude_module.subprocess, "Popen") as popen:
+            output = claude_module._delegate_output(b"{}", state)
+
+        self.assertEqual(output, "")
+        popen.assert_not_called()
+
     def test_uninstall_does_not_replace_later_user_change(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
