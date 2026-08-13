@@ -37,7 +37,7 @@
 
 当前合同由 `tests/test_state_abi.py` 固定：
 
-- 上一个发布版本是 v0.3.1；
+- 上一个发布版本是 v0.3.2；
 - Claude 读取 schema 1、2，写 schema 2；
 - Codex 读取并写 schema 1；
 - provider transaction journal 使用 schema 1。
