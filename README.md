@@ -88,7 +88,9 @@ LLM HUD 会在提交 provider 配置前再次检查可观察到的外部修改�
 | 只恢复一个 provider | `llm-hud uninstall --provider claude` 或 `--provider codex` |
 | 查看帮助或版本 | `llm-hud --help`、`llm-hud --version` |
 
-`rollback` 只在版本化安装存在上一运行时时切换 LLM HUD 版本，不修改 Claude Code 或 Codex CLI 配置。
+`rollback` 只在版本化安装存在上一运行时时切换 LLM HUD 版本，不修改 Claude Code 或 Codex CLI 配置。该命令由安装后的启动器所在的稳定控制层提供，因此不会出现在 `llm-hud --help` 的子命令列表中，也不能在源码目录里通过 `bin/llm-hud` 执行。
+
+显式指定 `--provider` 时，即使对应 CLI 未被检测到，`llm-hud install` 也会照常写入该工具的配置文件，便于提前配置；不带 `--provider` 的 `llm-hud install` 只配置已检测到的工具。
 
 `llm-hud uninstall` 的含义是解除集成：它恢复 Claude/Codex 接入前的配置，但不删除 LLM HUD 启动器、运行时或状态目录。当前没有完整删除程序的单一命令；如需彻底移除，请先执行 `llm-hud uninstall` 并确认 provider 配置已恢复，再删除默认的 `~/.local/bin/llm-hud` 文件、`~/.local/share/llm-hud` 目录和 `~/.config/llm-hud` 目录。使用自定义路径时，只删除 `${LLM_HUD_BIN_DIR}/llm-hud` 这个启动器文件，以及实际的 `LLM_HUD_INSTALL_DIR` 和 `LLM_HUD_STATE_DIR`；不要删除可能被其他程序共用的整个 bin 目录。
 
