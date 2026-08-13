@@ -4,6 +4,8 @@ LLM HUD 是面向 AI 编程 CLI 的轻量状态栏配置器：为 Claude Code �
 
 它不启动后台进程，也不跨工具收集或混用数据。这里的 HUD 指 CLI 会话底部的状态栏，不是 iTerm2 状态栏、系统菜单栏或 Shell 提示符。
 
+> **本项目完全由大模型开发**：全部代码、测试与文档由 Anthropic Claude 与 OpenAI Codex 共同编写，人类维护者负责提出需求、审查结果与发布决策。
+
 ## 效果预览
 
 Claude Code 通常显示双行 HUD：
