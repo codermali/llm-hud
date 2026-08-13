@@ -163,6 +163,49 @@ class CodexProviderTests(unittest.TestCase):
                 self.assertEqual(provider.uninstall().status, "uninstalled")
             self.assertEqual(status_line(config), ["current-dir"])
 
+    def test_recovery_writes_flow_through_the_provider_seam(self):
+        # Journal recovery must use the same patchable module bindings as the
+        # transactions, so fault-injection tests see every state write.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            config.write_text(set_array("", "tui", "status_line", list(HUD_ITEMS)))
+            state_dir = root / "state" / "providers"
+            state_dir.mkdir(parents=True)
+            pending = {
+                "schema": 1,
+                "config_path": str(config),
+                "original_present": False,
+                "original_items": [],
+                "installed_items": list(HUD_ITEMS),
+            }
+            (state_dir / "codex.journal.json").write_text(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "op": "install",
+                        "previous_state": None,
+                        "pending_state": pending,
+                    }
+                )
+            )
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                with mock.patch.object(
+                    codex_module,
+                    "atomic_write_provider_state",
+                    side_effect=OSError("injected state write failure"),
+                ):
+                    result = CodexProvider().install("ignored")
+            self.assertEqual(result.status, "error", result.message)
+            self.assertIn("injected state write failure", result.message)
+            # Recovery failed closed: the journal is kept and no state was
+            # committed behind the patched seam's back.
+            self.assertTrue((state_dir / "codex.journal.json").is_file())
+            self.assertFalse((state_dir / "codex.json").exists())
+
     def test_bom_config_reports_the_bom_instead_of_a_parse_error(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -117,7 +117,11 @@ def _recover_interrupted(
         return present and isinstance(installed, list) and items == installed
 
     recover_interrupted_transaction(
-        state_path, journal_path, config_matches_installed
+        state_path,
+        journal_path,
+        config_matches_installed,
+        write_state=atomic_write_provider_state,
+        restore_state=restore_provider_state,
     )
 
 

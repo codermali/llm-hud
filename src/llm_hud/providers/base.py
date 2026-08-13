@@ -11,9 +11,7 @@ from llm_hud.paths import provider_journal_path, provider_state_path
 from llm_hud.storage import (
     ContentChangedError,
     ProviderLock,
-    atomic_write_provider_state,
     read_provider_journal,
-    restore_provider_state,
 )
 
 
@@ -58,13 +56,19 @@ def recover_interrupted_transaction(
     state_path: Path,
     journal_path: Path,
     config_matches_installed: Callable[[dict[str, Any]], bool],
+    *,
+    write_state: Callable[[Path, Any], None],
+    restore_state: Callable[[Path, dict[str, Any] | None], None],
 ) -> None:
     """Commit or roll back a provider transaction interrupted mid-write.
 
     A journal exists only between the first and last write of an
     install/uninstall; whether the configuration write completed — decided by
     ``config_matches_installed`` against the journaled state — chooses the
-    direction, so recovery is idempotent under repeated crashes.
+    direction, so recovery is idempotent under repeated crashes.  The state
+    writers are parameters for the same reason as in the transaction
+    functions: each provider module must stay the single seam through which
+    all of its state writes flow, recovery included.
     """
     journal = read_provider_journal(journal_path)
     if journal is None:
@@ -74,9 +78,9 @@ def recover_interrupted_transaction(
     if journal.get("op") == "install" and isinstance(pending, dict):
         if config_matches_installed(pending):
             # The configuration write completed: commit the pending state.
-            atomic_write_provider_state(state_path, pending)
+            write_state(state_path, pending)
         else:
-            restore_provider_state(
+            restore_state(
                 state_path, previous if isinstance(previous, dict) else None
             )
         journal_path.unlink(missing_ok=True)
@@ -84,13 +88,13 @@ def recover_interrupted_transaction(
     if journal.get("op") == "uninstall" and isinstance(previous, dict):
         if config_matches_installed(previous):
             # The configuration restore never happened: abort the uninstall.
-            atomic_write_provider_state(state_path, previous)
+            write_state(state_path, previous)
         else:
             state_path.unlink(missing_ok=True)
         journal_path.unlink(missing_ok=True)
         return
     # Unrecognizable journal content: roll back and rely on state healing.
-    restore_provider_state(
+    restore_state(
         state_path, previous if isinstance(previous, dict) else None
     )
     journal_path.unlink(missing_ok=True)
