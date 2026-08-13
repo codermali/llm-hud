@@ -717,28 +717,6 @@ def _install_stable_tools_unlocked(
     return before, after
 
 
-def install_stable_tools(
-    source_or_tools: Path | StableTools,
-    root: Path,
-    *,
-    expected_active: str,
-) -> None:
-    root = Path(root).resolve(strict=True)
-    tools = (
-        _validate_stable_tools(source_or_tools)
-        if isinstance(source_or_tools, StableTools)
-        else load_stable_tools(Path(source_or_tools))
-    )
-    with RuntimeLock(root):
-        current = read_activation(root)
-        actual_active = current.active if current is not None else None
-        if actual_active != expected_active:
-            raise RuntimeLayoutError(
-                f"active runtime changed from {expected_active!r} to {actual_active!r}"
-            )
-        _install_stable_tools_unlocked(root, tools)
-
-
 def _restore_file_snapshot(
     path: Path,
     previous: _FileSnapshot,
@@ -938,26 +916,6 @@ def _install_external_launcher_unlocked(
                 f"cannot install external launcher: {failure}"
             ) from failure
         raise
-
-
-def install_external_launcher(
-    root: Path,
-    launcher: Path,
-    python: Path,
-    *,
-    expected_active: str,
-) -> None:
-    root = Path(root).resolve(strict=True)
-    launcher = _canonical_file_path(Path(launcher), "external launcher")
-    python = _validate_launcher_path(Path(python), "Python interpreter")
-    _preflight_external_launcher(root, launcher)
-    with RuntimeLock(root):
-        _install_external_launcher_unlocked(
-            root,
-            launcher,
-            python,
-            expected_active=expected_active,
-        )
 
 
 def install_checkout_launcher(launcher: Path, python: Path, command: Path) -> None:
@@ -1530,8 +1488,6 @@ def _prune_inactive_runtimes(root: Path, *, lock_timeout: float = 10.0) -> None:
         if activation is None:
             return
         keep = {activation.active}
-        if activation.previous is not None:
-            keep.add(activation.previous)
         versions = root / VERSIONS_DIR_NAME
         _reconcile_managed_runtime_trash(versions)
         try:
@@ -1756,22 +1712,6 @@ def _install_runtime_from_source(
         )
 
 
-def install_runtime_from_source(
-    source: Path,
-    root: Path,
-    python: Path | None = None,
-    *,
-    stable_control: str | None = None,
-) -> tuple[RuntimeMetadata, Activation]:
-    metadata, activation, _ = _install_runtime_from_source(
-        source,
-        root,
-        python,
-        stable_control=stable_control,
-    )
-    return metadata, activation
-
-
 def _install_versioned_runtime(
     source: Path,
     root: Path,
@@ -1812,15 +1752,6 @@ def _install_versioned_runtime(
         stable_control=tools.control,
         after_activation=finish_install,
     )
-
-
-def install_versioned_runtime(
-    source: Path,
-    root: Path,
-    python: Path | None = None,
-) -> tuple[RuntimeMetadata, Activation]:
-    metadata, activation, _ = _install_versioned_runtime(source, root, python)
-    return metadata, activation
 
 
 def _restore_after_install_failure_unlocked(

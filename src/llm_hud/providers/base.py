@@ -39,7 +39,6 @@ class Result:
 @dataclass(frozen=True)
 class ProviderCapabilities:
     integration: Literal["command", "native", "builtin"]
-    custom_renderer: bool
     persistent_metrics: tuple[str, ...]
     on_demand_metrics: tuple[str, ...] = ()
 

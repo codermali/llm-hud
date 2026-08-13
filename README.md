@@ -85,12 +85,9 @@ LLM HUD 会在提交 provider 配置前再次检查可观察到的外部修改�
 | 重新配置所有已检测工具 | `llm-hud install` |
 | 配置一个工具 | `llm-hud install --provider claude` 或 `--provider codex` |
 | 更新到最新 Release | 重新运行快速开始中的安装命令 |
-| 回到上一个已安装运行时 | `llm-hud rollback` |
 | 恢复接入前的 provider 配置 | `llm-hud uninstall` |
 | 只恢复一个 provider | `llm-hud uninstall --provider claude` 或 `--provider codex` |
 | 查看帮助或版本 | `llm-hud --help`、`llm-hud --version` |
-
-`rollback` 只在版本化安装存在上一运行时时切换 LLM HUD 版本，不修改 Claude Code 或 Codex CLI 配置。该命令由安装后的启动器所在的稳定控制层提供，因此不会出现在 `llm-hud --help` 的子命令列表中，也不能在源码目录里通过 `bin/llm-hud` 执行。
 
 显式指定 `--provider` 时，即使对应 CLI 未被检测到，`llm-hud install` 也会照常写入该工具的配置文件，便于提前配置；不带 `--provider` 的 `llm-hud install` 只配置已检测到的工具。
 

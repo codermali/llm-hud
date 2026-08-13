@@ -17,19 +17,21 @@ from llm_hud.runtime import (
     Activation,
     RuntimeLayoutError,
     RuntimeLock,
-    activate,
-    activate_with_replaced,
-    clear_activation,
-    finalize_runtime,
     format_activation,
     initialize_layout,
     parse_activation,
     read_activation,
-    restore_activation,
     runtime_path,
     source_digest,
     validate_release_id,
     validate_runtime,
+)
+from tests.support import (
+    activate,
+    activate_with_replaced,
+    clear_activation,
+    finalize_runtime,
+    restore_activation,
 )
 
 
@@ -71,12 +73,18 @@ class ReleaseIdTests(unittest.TestCase):
 
 
 class ActivationTests(unittest.TestCase):
-    def test_round_trip_uses_one_canonical_line(self):
-        value = Activation("2.0.0-b", "1.0.0-a")
+    def test_round_trip_writes_an_empty_legacy_field(self):
+        value = Activation("2.0.0-b")
         self.assertEqual(parse_activation(format_activation(value)), value)
         self.assertEqual(
             format_activation(Activation("1.0.0-a")),
             "llm-hud-activation-v1 1.0.0-a -\n",
+        )
+
+    def test_legacy_previous_field_is_accepted_but_ignored(self):
+        self.assertEqual(
+            parse_activation("llm-hud-activation-v1 2.0.0-b 1.0.0-a\n"),
+            Activation("2.0.0-b"),
         )
 
     def test_rejects_noncanonical_or_self_referential_records(self):
@@ -98,9 +106,9 @@ class ActivationTests(unittest.TestCase):
             second = create_runtime(root, "second", "2.0.0")
 
             self.assertEqual(activate(root, first), Activation(first))
-            self.assertEqual(activate(root, second), Activation(second, first))
+            self.assertEqual(activate(root, second), Activation(second))
             before = (root / ACTIVATION_NAME).read_bytes()
-            self.assertEqual(activate(root, second), Activation(second, first))
+            self.assertEqual(activate(root, second), Activation(second))
             self.assertEqual((root / ACTIVATION_NAME).read_bytes(), before)
 
     def test_invalid_runtime_does_not_change_activation(self):
@@ -117,20 +125,7 @@ class ActivationTests(unittest.TestCase):
 
             self.assertEqual((root / ACTIVATION_NAME).read_bytes(), before)
 
-    def test_broken_old_previous_does_not_block_a_new_activation(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            initialize_owned_layout(root)
-            first = create_runtime(root, "first", "1.0.0")
-            second = create_runtime(root, "second", "2.0.0")
-            third = create_runtime(root, "third", "3.0.0")
-            activate(root, first)
-            activate(root, second)
-            (runtime_path(root, first) / "README.md").write_text("tampered")
-
-            self.assertEqual(activate(root, third), Activation(third, second))
-
-    def test_broken_active_can_be_repaired_without_preserving_it(self):
+    def test_broken_active_can_be_replaced(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             initialize_owned_layout(root)
@@ -140,36 +135,6 @@ class ActivationTests(unittest.TestCase):
             (runtime_path(root, first) / "README.md").write_text("tampered")
 
             self.assertEqual(activate(root, second), Activation(second))
-
-    def test_repair_preserves_only_a_healthy_previous_runtime(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            initialize_owned_layout(root)
-            first = create_runtime(root, "first", "1.0.0")
-            second = create_runtime(root, "second", "2.0.0")
-            third = create_runtime(root, "third", "3.0.0")
-            activate(root, first)
-            activate(root, second)
-            (runtime_path(root, second) / "README.md").write_text("tampered")
-
-            self.assertEqual(activate(root, third), Activation(third, first))
-            activate(root, first)
-            (runtime_path(root, first) / "README.md").write_text("also tampered")
-            (runtime_path(root, third) / "README.md").write_text("tampered too")
-            fourth = create_runtime(root, "fourth", "4.0.0")
-            self.assertEqual(activate(root, fourth), Activation(fourth))
-
-    def test_repairing_directly_to_the_previous_does_not_self_reference(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            initialize_owned_layout(root)
-            first = create_runtime(root, "first", "1.0.0")
-            second = create_runtime(root, "second", "2.0.0")
-            activate(root, first)
-            activate(root, second)
-            (runtime_path(root, second) / "README.md").write_text("tampered")
-
-            self.assertEqual(activate(root, first), Activation(first))
 
     def test_expected_active_prevents_lost_update(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -201,8 +166,8 @@ class ActivationTests(unittest.TestCase):
                 expected_active=second,
             )
 
-            self.assertEqual(activation, Activation(third, second))
-            self.assertEqual(replaced, Activation(second, first))
+            self.assertEqual(activation, Activation(third))
+            self.assertEqual(replaced, Activation(second))
 
     def test_activate_with_replaced_reports_no_replacement_for_a_noop(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -464,7 +429,7 @@ class RuntimeSourceTests(unittest.TestCase):
             initialize_owned_layout(root)
             staging = stage_runtime(root, "candidate", "1.2.3")
             events: list[str] = []
-            original_activate = runtime_module._activate_unlocked
+            original_activate = runtime_module._activate_with_replaced_unlocked
             original_rename = runtime_module.os.rename
 
             def record_activate(*args, **kwargs):
@@ -484,7 +449,8 @@ class RuntimeSourceTests(unittest.TestCase):
                 "llm_hud.runtime._fsync_directory_required",
                 side_effect=lambda path: events.append(f"sync:{path.name}"),
             ), mock.patch(
-                "llm_hud.runtime._activate_unlocked", side_effect=record_activate
+                "llm_hud.runtime._activate_with_replaced_unlocked",
+                side_effect=record_activate,
             ):
                 metadata = finalize_runtime(root, staging, "1.2.3")
                 activate(root, metadata.release_id)

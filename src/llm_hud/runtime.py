@@ -34,7 +34,7 @@ VERSIONS_DIR_NAME = "versions"
 CONTROL_DIR_NAME = "control"
 STABLE_STATE_NAME = ".llm-hud-stable.json"
 LAUNCHER_STATE_NAME = ".llm-hud-launcher-state.json"
-NO_PREVIOUS = "-"
+EMPTY_ACTIVATION_SLOT = "-"
 _RELEASE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _VERSION = re.compile(
@@ -53,8 +53,6 @@ class RuntimeLayoutError(ValueError):
 def validate_release_id(value: object) -> str:
     if not isinstance(value, str) or not _RELEASE_ID.fullmatch(value):
         raise RuntimeLayoutError(f"invalid release id: {value!r}")
-    if value in (".", ".."):
-        raise RuntimeLayoutError(f"invalid release id: {value!r}")
     return value
 
 
@@ -67,14 +65,9 @@ def validate_version(value: object) -> str:
 @dataclass(frozen=True)
 class Activation:
     active: str
-    previous: str | None = None
 
     def __post_init__(self) -> None:
         validate_release_id(self.active)
-        if self.previous is not None:
-            validate_release_id(self.previous)
-            if self.previous == self.active:
-                raise RuntimeLayoutError("active and previous releases must differ")
 
 
 @dataclass(frozen=True)
@@ -101,19 +94,24 @@ class RuntimeMetadata:
 
 
 def format_activation(value: Activation) -> str:
-    previous = value.previous if value.previous is not None else NO_PREVIOUS
-    return f"{ACTIVATION_PREFIX} {value.active} {previous}\n"
+    return f"{ACTIVATION_PREFIX} {value.active} {EMPTY_ACTIVATION_SLOT}\n"
 
 
 def parse_activation(text: str) -> Activation:
     parts = text.removesuffix("\n").split(" ")
     if len(parts) != 3 or parts[0] != ACTIVATION_PREFIX:
         raise RuntimeLayoutError("invalid activation record")
-    previous = None if parts[2] == NO_PREVIOUS else parts[2]
-    value = Activation(parts[1], previous)
-    if text != format_activation(value):
+    active = validate_release_id(parts[1])
+    legacy_previous = parts[2]
+    if legacy_previous != EMPTY_ACTIVATION_SLOT:
+        validate_release_id(legacy_previous)
+        if legacy_previous == active:
+            raise RuntimeLayoutError("active and previous releases must differ")
+    if text != f"{ACTIVATION_PREFIX} {active} {legacy_previous}\n":
         raise RuntimeLayoutError("activation record is not in canonical format")
-    return value
+    # v1 records used the third field for a rollback target.  It remains part
+    # of the on-disk ABI so older installs can be read, but is no longer state.
+    return Activation(active)
 
 
 def _read_owned_text(path: Path, description: str) -> str | None:
@@ -414,26 +412,10 @@ def _activate_with_replaced_unlocked(
             raise RuntimeLayoutError(
                 f"active runtime changed from {expected_active!r} to {actual_active!r}"
             )
-    previous: str | None = None
     if current is not None:
         if current.active == release_id:
             return current, None
-        try:
-            _validate_runtime_in_layout(root, current.active)
-        except RuntimeLayoutError:
-            if current.previous is not None and current.previous != release_id:
-                try:
-                    _validate_runtime_in_layout(root, current.previous)
-                except RuntimeLayoutError:
-                    pass
-                else:
-                    previous = current.previous
-        else:
-            previous = current.active
-    updated = Activation(
-        active=release_id,
-        previous=previous,
-    )
+    updated = Activation(active=release_id)
     try:
         atomic_write_text(
             root / ACTIVATION_NAME,
@@ -446,52 +428,9 @@ def _activate_with_replaced_unlocked(
     return updated, current
 
 
-def _activate_unlocked(
-    root: Path,
-    release_id: str,
-    *,
-    expected_active: str | None | object = _UNSET,
-) -> Activation:
-    activation, _ = _activate_with_replaced_unlocked(
-        root,
-        release_id,
-        expected_active=expected_active,
-    )
-    return activation
-
-
-def activate(
-    root: Path,
-    release_id: str,
-    *,
-    expected_active: str | None | object = _UNSET,
-    lock_timeout: float = 10.0,
-) -> Activation:
-    with RuntimeLock(root, timeout=lock_timeout):
-        return _activate_unlocked(
-            root, release_id, expected_active=expected_active
-        )
-
-
-def activate_with_replaced(
-    root: Path,
-    release_id: str,
-    *,
-    expected_active: str | None | object = _UNSET,
-    lock_timeout: float = 10.0,
-) -> tuple[Activation, Activation | None]:
-    """Activate a runtime and return the exact activation record it replaced."""
-    with RuntimeLock(root, timeout=lock_timeout):
-        return _activate_with_replaced_unlocked(
-            root,
-            release_id,
-            expected_active=expected_active,
-        )
-
-
 def _restore_activation_unlocked(
     root: Path,
-    previous: Activation,
+    replaced_activation: Activation,
     *,
     expected_active: str,
 ) -> Activation:
@@ -502,11 +441,11 @@ def _restore_activation_unlocked(
             f"active runtime changed from {expected_active!r} "
             f"to {actual_active!r}"
         )
-    validate_runtime(root, previous.active)
+    validate_runtime(root, replaced_activation.active)
     try:
         atomic_write_text(
             root / ACTIVATION_NAME,
-            format_activation(previous),
+            format_activation(replaced_activation),
             mode=0o600,
             follow_symlinks=False,
         )
@@ -514,24 +453,7 @@ def _restore_activation_unlocked(
         raise RuntimeLayoutError(
             f"cannot restore activation record: {error}"
         ) from error
-    return previous
-
-
-def restore_activation(
-    root: Path,
-    previous: Activation,
-    *,
-    expected_active: str,
-    lock_timeout: float = 10.0,
-) -> Activation:
-    """Restore an exact earlier activation after a failed installation."""
-    validate_release_id(expected_active)
-    with RuntimeLock(root, timeout=lock_timeout):
-        return _restore_activation_unlocked(
-            root,
-            previous,
-            expected_active=expected_active,
-        )
+    return replaced_activation
 
 
 def _clear_activation_unlocked(
@@ -553,18 +475,6 @@ def _clear_activation_unlocked(
         raise RuntimeLayoutError(
             f"cannot clear activation record: {error}"
         ) from error
-
-
-def clear_activation(
-    root: Path,
-    *,
-    expected_active: str,
-    lock_timeout: float = 10.0,
-) -> None:
-    """Remove an activation record only if it still names the expected runtime."""
-    validate_release_id(expected_active)
-    with RuntimeLock(root, timeout=lock_timeout):
-        _clear_activation_unlocked(root, expected_active=expected_active)
 
 
 def _read_source_file(path: Path) -> tuple[bytes, bool]:
@@ -874,23 +784,6 @@ def _finalize_runtime_unlocked(
     # this same held lock, so post-rename verification keeps every layout,
     # marker, and launcher check but not a second tree hash.
     return _validate_runtime_in_layout(root, release_id, verify_digest=False)
-
-
-def finalize_runtime(
-    root: Path,
-    staging: Path,
-    version: str,
-    *,
-    expected_content_sha256: str | None = None,
-    lock_timeout: float = 10.0,
-) -> RuntimeMetadata:
-    with RuntimeLock(root, timeout=lock_timeout):
-        return _finalize_runtime_unlocked(
-            root,
-            staging,
-            version,
-            expected_content_sha256=expected_content_sha256,
-        )
 
 
 class RuntimeLock:

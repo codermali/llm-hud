@@ -12,13 +12,17 @@ from pathlib import Path
 from unittest import mock
 
 from llm_hud.cli import (
-    PROVIDER_IDS,
-    RENDER_PROVIDER_IDS,
     _probe_version,
     build_parser,
     command_doctor,
 )
-from llm_hud.providers import provider_by_id, providers
+from llm_hud.providers import (
+    PROVIDER_IDS,
+    RENDER_PROVIDER_IDS,
+    provider_by_id,
+    providers,
+)
+from llm_hud.providers.base import Provider
 from llm_hud.providers.codex import CodexProvider, HUD_ITEMS
 from llm_hud.providers.claude import ClaudeProvider
 from tests.support import Environment
@@ -94,11 +98,16 @@ class InstallCommandTests(unittest.TestCase):
 
 
 class ProviderRegistryTests(unittest.TestCase):
-    def test_provider_id_literals_match_the_registered_providers(self):
+    def test_registry_metadata_matches_provider_implementations(self):
         self.assertEqual(PROVIDER_IDS, tuple(p.id for p in providers()))
+        implementations = tuple(
+            provider_id
+            for provider_id in PROVIDER_IDS
+            if type(provider_by_id(provider_id)).render is not Provider.render
+        )
         self.assertEqual(
             RENDER_PROVIDER_IDS,
-            tuple(p.id for p in providers() if p.capabilities.custom_renderer),
+            implementations,
         )
 
     def test_provider_by_id_matches_ids_and_rejects_unknown_ones(self):
@@ -138,10 +147,15 @@ class ProviderRegistryTests(unittest.TestCase):
 
 
 class RenderCommandTests(unittest.TestCase):
-    def test_render_only_exposes_custom_renderer_providers(self):
+    def test_render_only_exposes_registered_renderer_providers(self):
         parser = build_parser()
-        parser.parse_args(["render", "claude"])
-        for provider_id in ("codex", "kimi"):
+        for provider_id in RENDER_PROVIDER_IDS:
+            parser.parse_args(["render", provider_id])
+        for provider_id in (
+            provider_id
+            for provider_id in PROVIDER_IDS
+            if provider_id not in RENDER_PROVIDER_IDS
+        ):
             with self.subTest(provider=provider_id):
                 buffer = io.StringIO()
                 with contextlib.redirect_stderr(buffer):

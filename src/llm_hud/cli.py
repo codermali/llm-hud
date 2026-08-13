@@ -9,14 +9,14 @@ import sys
 from pathlib import Path
 
 from llm_hud import __version__
-from llm_hud.providers import provider_by_id, providers
+from llm_hud.providers import (
+    PROVIDER_IDS,
+    RENDER_PROVIDER_IDS,
+    provider_by_id,
+    providers,
+)
 
 
-# Keep in sync with the providers registered in llm_hud.providers (pinned by
-# a test); deriving these from providers() would import every provider module
-# on every render tick.
-PROVIDER_IDS = ("claude", "codex", "kimi")
-RENDER_PROVIDER_IDS = ("claude",)
 # Keep in sync with llm_hud.runtime.LAUNCHER_STATE_NAME (pinned by a test);
 # importing the runtime module here would slow every render tick.
 _LAUNCHER_STATE_NAME = ".llm-hud-launcher-state.json"
@@ -145,11 +145,7 @@ def command_doctor(_: argparse.Namespace) -> int:
 def command_render(args: argparse.Namespace) -> int:
     provider = provider_by_id(args.provider)
     raw = sys.stdin.buffer.read()
-    try:
-        output = provider.render(raw, no_color=args.no_color)
-    except NotImplementedError as error:
-        print(str(error), file=sys.stderr)
-        return 2
+    output = provider.render(raw, no_color=args.no_color)
     print(output)
     return 0
 

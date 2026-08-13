@@ -21,7 +21,6 @@ class KimiProviderTests(unittest.TestCase):
             self.assertIn("/usage", detail)
             self.assertEqual(result.message, detail)
             self.assertEqual(provider.capabilities.integration, "builtin")
-            self.assertFalse(provider.capabilities.custom_renderer)
             self.assertEqual(provider.capabilities.on_demand_metrics, ("quota",))
             self.assertEqual(provider.uninstall().status, "skipped")
 

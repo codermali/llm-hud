@@ -1,6 +1,6 @@
 # Contributing to LLM HUD
 
-感谢你帮助改进 LLM HUD。项目仍处于 Alpha 阶段；提交改动时，请优先保持已有配置、状态文件和版本回退路径的兼容性。
+感谢你帮助改进 LLM HUD。项目仍处于 Alpha 阶段；提交改动时，请优先保持已有配置、状态文件和升级路径的兼容性。
 
 ## 开发环境
 
@@ -18,7 +18,7 @@ python3.9 bin/llm-hud providers
 
 涉及用户配置和安装状态的测试使用临时路径，不应修改本机真实的 Claude Code、Codex CLI 或 Kimi CLI 配置。
 
-GitHub Actions 在 Linux 上覆盖 Python 3.9、3.11 和 3.14，在 macOS 上运行完整测试并用 Apple Command Line Tools 的 Python 3.9 做安装烟测，在原生 Windows 上覆盖 Python 3.9/3.13 的关键模块、安装失败恢复，以及通过 Git Bash 完成安装、升级、`rollback`、`doctor` 和解除集成。
+GitHub Actions 在 Linux 上覆盖 Python 3.9、3.11 和 3.14，在 macOS 上运行完整测试并用 Apple Command Line Tools 的 Python 3.9 做安装烟测，在原生 Windows 上覆盖 Python 3.9/3.13 的关键模块、安装失败恢复，以及通过 Git Bash 完成安装、升级、`doctor` 和解除集成。
 
 ## 项目结构
 
@@ -26,7 +26,7 @@ GitHub Actions 在 Linux 上覆盖 Python 3.9、3.11 和 3.14，在 macOS 上运
 install.sh                       Release 和本地源码安装入口
 bin/llm-hud                      源码树命令入口
 scripts/llm-hud-dispatcher       安装后固定的稳定分发器
-scripts/runtime_control.py       独立于当前运行时的启动与回退控制
+scripts/runtime_control.py       独立于当前运行时的启动控制
 scripts/bench_render.py          状态栏端到端基准
 scripts/verify_distribution.py   wheel/sdist 内容检查
 .github/workflows/               跨平台测试和 Release 工作流
@@ -48,15 +48,13 @@ src/llm_hud/
     ├── codex.py                 Codex CLI 原生状态栏集成
     └── kimi.py                  Kimi CLI 内置工具栏声明
 tests/                           单元、安装事务和跨版本协议测试
-└── fixtures/runtime_v0_2_0/     不可修改的真实 v0.2.0 runtime 夹具
 ```
 
 ## 修改原则
 
 - 一个提交只处理一个逻辑问题，并让实现、回归测试和必要文档一起落地。
-- 不要把 `scripts/runtime_control.py` 或 `scripts/llm-hud-dispatcher` 简单改为从当前 `llm_hud` 包导入实现。它们必须在 active runtime 损坏时仍能独立验证并执行 `rollback`。
+- 不要把 `scripts/runtime_control.py` 或 `scripts/llm-hud-dispatcher` 简单改为从当前 `llm_hud` 包导入实现。它们必须在分发前独立验证 active runtime，不能依赖尚未验证的包代码。
 - 修改 runtime marker、activation、stable control、launcher state 或 provider state 前，先阅读 `tests/test_stable_control.py`、`tests/test_runtime.py` 和 `tests/test_state_abi.py` 中钉住的协议。
-- `tests/fixtures/runtime_v0_2_0` 保存真实 v0.2.0 runtime 的历史字节和 digest。不要为适配当前实现而修改夹具内容；其说明见 `tests/fixtures/README.md`。
 - provider 配置必须保守修改、保存恢复状态，并在检测到可观察的外部编辑时拒绝静默覆盖。
 - Windows 支持是正式功能。涉及路径、换行、权限、原子替换、文件锁或安装事务的改动必须考虑原生 Windows 行为，并补充相应测试。
 

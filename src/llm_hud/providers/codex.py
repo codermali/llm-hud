@@ -40,11 +40,9 @@ HUD_ITEMS = [
     "weekly-limit",
     "context-remaining",
 ]
-# Previously-managed items that installs must scrub from status_line; none now.
-OBSOLETE_ITEMS: list[str] = []
-# State ABI: rollback switches only the runtime, never provider state, so a
-# release must keep reading every schema the previous release wrote.  Bump the
-# written schema only together with tests/test_state_abi.py.
+# State ABI: an upgrade leaves provider state written by the previous release,
+# so the new release must keep reading the older schemas it can encounter.
+# Bump the written schema only together with tests/test_state_abi.py.
 STATE_SCHEMAS = frozenset((1,))
 _CONFLICT_MESSAGE = conflict_message("status_line")
 
@@ -90,7 +88,7 @@ def _status_line(parsed: dict[str, Any]) -> tuple[bool, list[str]]:
 
 
 def _with_hud(items: list[str]) -> list[str]:
-    managed = set(HUD_ITEMS + OBSOLETE_ITEMS)
+    managed = set(HUD_ITEMS)
     extras = [item for item in items if item not in managed]
     return [*HUD_ITEMS, *extras]
 
@@ -139,7 +137,6 @@ class CodexProvider(TransactionalProvider):
     command = "codex"
     capabilities = ProviderCapabilities(
         integration="native",
-        custom_renderer=False,
         persistent_metrics=(
             "model",
             "cwd",

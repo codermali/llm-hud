@@ -1,8 +1,7 @@
-"""Pins the provider-state compatibility contract.
+"""Pins the provider-state upgrade compatibility contract.
 
-`llm-hud rollback` switches only the runtime and never migrates provider
-state, so a release must keep reading every state schema the previous release
-wrote (N-1). Bumping a written schema is a conscious act: keep the old schema
+A release must keep reading every state schema the previous release wrote
+(N-1). Bumping a written schema is a conscious act: keep the old schema
 readable, update the pins here, and describe the migration in the commit.
 """
 
@@ -20,15 +19,10 @@ from llm_hud.storage import JOURNAL_SCHEMAS
 from tests.support import Environment
 
 
-# Schemas written and read by the previous release (v0.3.2), plus the schemas
-# written by the current tree. Advance these pins after every release: the
-# current runtime must read N-1 state, and N-1 must also be able to read state
-# written before a rollback to it.
+# Schemas written by the previous release (v0.3.2), plus the schemas written by
+# the current tree. Advance these pins after every release: the current runtime
+# must continue to read N-1 state during an upgrade.
 PREVIOUS_RELEASE_WRITES = {"claude": 2, "codex": 1}
-PREVIOUS_RELEASE_READS = {
-    "claude": frozenset((1, 2)),
-    "codex": frozenset((1,)),
-}
 CURRENT_WRITES = {"claude": 2, "codex": 1}
 
 
@@ -41,10 +35,6 @@ class StateAbiTests(unittest.TestCase):
                 provider_id,
             )
         self.assertEqual(JOURNAL_SCHEMAS, frozenset((1,)))
-
-    def test_current_writes_remain_readable_after_rollback(self):
-        for provider_id, schema in CURRENT_WRITES.items():
-            self.assertIn(schema, PREVIOUS_RELEASE_READS[provider_id], provider_id)
 
     def test_written_schemas_are_pinned(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -39,9 +39,10 @@ from llm_hud.storage import (
 )
 
 
-# State ABI: rollback switches only the runtime, never provider state, so a
-# release must keep reading every schema the previous release wrote.  Bump the
-# written schema only together with tests/test_state_abi.py.
+# State ABI: an upgrade leaves provider state written by the previous release,
+# so the new release must keep reading the older schemas it can encounter.
+# Schema 1 remains readable because existing installations may still contain it.
+# Bump the written schema only together with tests/test_state_abi.py.
 STATE_SCHEMAS = frozenset((1, 2))
 _CONFLICT_MESSAGE = conflict_message("statusLine")
 
@@ -367,7 +368,6 @@ class ClaudeProvider(TransactionalProvider):
     command = "claude"
     capabilities = ProviderCapabilities(
         integration="command",
-        custom_renderer=True,
         persistent_metrics=("model", "cwd", "quota"),
     )
 

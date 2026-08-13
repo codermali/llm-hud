@@ -19,20 +19,23 @@ from llm_hud.installer import (
     claim_install_root,
     install_checkout_launcher,
     install_complete,
-    install_runtime_from_source,
-    install_stable_tools,
-    install_versioned_runtime,
 )
 from llm_hud.runtime import (
     INSTALL_MARKER_NAME,
     INSTALL_MARKER_VALUE,
     VERSIONS_DIR_NAME,
     RuntimeLayoutError,
-    activate,
     initialize_layout,
     read_activation,
     runtime_path,
     validate_runtime,
+)
+from tests.support import (
+    activate,
+    install_external_launcher,
+    install_runtime_from_source,
+    install_stable_tools,
+    install_versioned_runtime,
 )
 
 
@@ -51,7 +54,7 @@ def copy_runtime_checkout(destination: Path) -> None:
 
 
 class RuntimeInstallerTests(unittest.TestCase):
-    def test_prune_removes_only_unreferenced_releases(self):
+    def test_prune_keeps_only_the_active_and_foreign_releases(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             root = base / "runtime"
@@ -73,7 +76,7 @@ class RuntimeInstallerTests(unittest.TestCase):
             installer_module._prune_inactive_runtimes(root)
 
             remaining = {path.name for path in versions.iterdir()}
-            self.assertEqual(remaining, {releases[1], releases[2], foreign.name})
+            self.assertEqual(remaining, {releases[2], foreign.name})
 
     def test_failed_trash_removal_does_not_block_same_release_reinstall(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -522,7 +525,7 @@ class RuntimeInstallerTests(unittest.TestCase):
                     RuntimeLayoutError,
                     "simulated durability failure",
                 ):
-                    installer_module.install_external_launcher(
+                    install_external_launcher(
                         root,
                         launcher,
                         base / "replacement-python",
@@ -562,7 +565,7 @@ class RuntimeInstallerTests(unittest.TestCase):
                 side_effect=replace_launcher_then_fail,
             ):
                 with self.assertRaisesRegex(RuntimeLayoutError, "rollback incomplete"):
-                    installer_module.install_external_launcher(
+                    install_external_launcher(
                         root,
                         launcher,
                         base / "replacement-python",
@@ -603,7 +606,7 @@ class RuntimeInstallerTests(unittest.TestCase):
                 side_effect=replace_pointer_then_fail,
             ):
                 with self.assertRaisesRegex(RuntimeLayoutError, "rollback incomplete"):
-                    installer_module.install_external_launcher(
+                    install_external_launcher(
                         root,
                         launcher,
                         base / "replacement-python",
@@ -1273,7 +1276,7 @@ class RuntimeInstallerTests(unittest.TestCase):
             self.assertFalse(any(runtime.rglob("*.pyc")))
             self.assertFalse(any(root.glob(f"{STAGING_PREFIX}*")))
 
-    def test_reinstall_is_idempotent_and_does_not_self_reference(self):
+    def test_reinstall_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "runtime"
             root.mkdir()
@@ -1285,7 +1288,6 @@ class RuntimeInstallerTests(unittest.TestCase):
 
             self.assertEqual(second_metadata, first_metadata)
             self.assertEqual(second_activation, first_activation)
-            self.assertIsNone(second_activation.previous)
             self.assertEqual((root / "activation").read_bytes(), activation_bytes)
             self.assertEqual(len(list((root / "versions").iterdir())), 1)
 
@@ -1326,7 +1328,6 @@ class RuntimeInstallerTests(unittest.TestCase):
 
             self.assertEqual(repaired, first)
             self.assertEqual(activation.active, first.release_id)
-            self.assertEqual(activation.previous, second.release_id)
             self.assertEqual(validate_runtime(root, first.release_id), first)
             self.assertEqual(validate_runtime(root, second.release_id), second)
 
@@ -1683,7 +1684,7 @@ class RuntimeInstallerTests(unittest.TestCase):
             self.assertEqual(running.returncode, 0, running.stderr)
             self.assertEqual(running.stdout.strip(), f"llm-hud {__version__}")
 
-    def test_post_activation_failure_restores_the_previous_runtime(self):
+    def test_post_activation_failure_restores_the_replaced_runtime(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             root = base / "runtime"
@@ -2086,7 +2087,6 @@ class RuntimeInstallerTests(unittest.TestCase):
             current = read_activation(root)
             assert current is not None
             self.assertEqual(current.active, first.release_id)
-            self.assertEqual(current.previous, foreign.release_id)
 
     def test_first_install_post_activation_failure_clears_activation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2217,7 +2217,6 @@ class RuntimeInstallerTests(unittest.TestCase):
             current = read_activation(root)
             assert current is not None
             self.assertEqual(current.active, second.release_id)
-            self.assertEqual(current.previous, first.release_id)
 
     def test_real_dispatch_is_preflighted_before_activation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2342,7 +2341,7 @@ class RuntimeInstallerTests(unittest.TestCase):
             copy_runtime_checkout(changed_source)
             with (changed_source / "README.md").open("a") as handle:
                 handle.write("\nchanged runtime\n")
-            second_metadata, _ = install_runtime_from_source(changed_source, root)
+            install_runtime_from_source(changed_source, root)
             original_copy = installer_module.copy_runtime_source
 
             def activate_during_copy(source: Path, staging: Path) -> None:
@@ -2359,7 +2358,6 @@ class RuntimeInstallerTests(unittest.TestCase):
             current = read_activation(root)
             assert current is not None
             self.assertEqual(current.active, first_metadata.release_id)
-            self.assertEqual(current.previous, second_metadata.release_id)
 
 
 if __name__ == "__main__":

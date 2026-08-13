@@ -62,6 +62,12 @@ def _require_metadata(content: str, description: str) -> None:
         raise ValueError(f"{description} is missing: {', '.join(missing)}")
 
 
+def _reject_tree(names: set[str], tree: str, description: str) -> None:
+    prefix = f"{tree}/"
+    if tree in names or any(name.startswith(prefix) for name in names):
+        raise ValueError(f"{description} unexpectedly contains the {tree} tree")
+
+
 def _verify_wheel(path: Path) -> None:
     with zipfile.ZipFile(path) as archive:
         names = set(archive.namelist())
@@ -99,6 +105,7 @@ def _verify_sdist(path: Path) -> None:
             if name.startswith(prefix)
         }
         _require_files(names, SDIST_PACKAGE_FILES, "sdist")
+        _reject_tree(names, "tests", "sdist")
         if f"{root}/PKG-INFO" not in archived_names:
             raise ValueError("sdist is missing: PKG-INFO")
         member = archive.getmember(f"{root}/PKG-INFO")

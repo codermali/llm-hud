@@ -8,9 +8,9 @@
 
 1. PATH 中的外部启动器固定安装时选定的 Python，避免 Claude Code、Codex CLI 等精简环境改变解释器选择。
 2. 安装根目录中的稳定 dispatcher 和 `runtime_control.py` 读取 activation，验证目标 runtime，再把命令交给 active release。
-3. `versions/<release-id>` 保存不可变的版本化 runtime；activation 记录 active 和 previous，用于升级与 `rollback`。
+3. `versions/<release-id>` 保存不可变的版本化 runtime；activation 记录当前 active release。
 
-稳定控制层必须独立于 active runtime。即使当前包损坏，它仍要能够验证 previous runtime 并完成回退。因此 `scripts/runtime_control.py` 与 `src/llm_hud/runtime.py`、`scripts/llm-hud-dispatcher` 与包内校验逻辑之间存在有意的重复；不要为了减少代码量而让稳定层导入 active package。行为一致性由 runtime、stable-control 和 ABI 测试维护。
+稳定控制层必须独立于 active runtime，在导入包代码前验证目标 runtime。因此 `scripts/runtime_control.py` 与 `src/llm_hud/runtime.py`、`scripts/llm-hud-dispatcher` 与包内校验逻辑之间存在有意的重复；不要为了减少代码量而让稳定层导入尚未验证的 active package。行为一致性由 runtime、stable-control 和 ABI 测试维护。
 
 安装器会先完成源码复制、digest 和布局验证，再更新 activation。稳定工具、dispatcher smoke、外部启动器和 provider 配置属于后续阶段：
 
@@ -26,27 +26,27 @@
 
 以下格式跨版本存在，并由测试钉住：
 
-- activation 的 active/previous 关系；
+- activation 格式及 active release；
 - install ownership/layout marker、runtime marker 与 release id；
 - stable dispatcher 与 runtime-control 的固定位置和接口；
 - launcher state；
 - runtime trash 和 repair-backup records；
 - Claude/Codex provider state 与 transaction journal。
 
-`rollback` 只切换 runtime，不迁移 provider state。因此兼容性必须同时成立：当前版本能读取上一个发布版本写出的 schema，并且上一个发布版本能读取当前版本写出的 schema。否则升级成功后再执行 `rollback`，旧 runtime 会无法处理磁盘上的新状态。
+activation v1 继续使用三字段磁盘格式。当前实现只使用 active 字段；读取旧记录时会校验但忽略历史 previous 字段，任何新写入都把第三字段规范化为 `-`。
+
+升级不会先迁移 provider state，因此当前版本必须能读取上一个发布版本写出的 schema。
 
 当前合同由 `tests/test_state_abi.py` 固定：
 
-- 上一个发布版本是 v0.3.2；
+- 兼容性基线是上一个发布版本 v0.3.2；
 - Claude 读取 schema 1、2，写 schema 2；
 - Codex 读取并写 schema 1；
 - provider transaction journal 使用 schema 1。
 
-每次发布后都要推进测试中的 `PREVIOUS_RELEASE_*` 固定值，即使 schema 没有变化。提升当前写出 schema 前，必须确认上一个正式版本已经能读取它；未知的未来 schema 必须让 HUD 渲染热路径继续工作，同时让常规 `install`/`uninstall` 配置操作 fail closed 并保留原文件。显式的 `uninstall --forget` 是由用户决定放弃恢复记录的例外。
+每次发布后都要推进测试中的 `PREVIOUS_RELEASE_WRITES` 固定值，即使 schema 没有变化。提升当前写出 schema 时，应继续读取上一个正式版本写出的状态；未知的未来 schema 必须让 HUD 渲染热路径继续工作，同时让常规 `install`/`uninstall` 配置操作 fail closed 并保留原文件。显式的 `uninstall --forget` 是由用户决定放弃恢复记录的例外。
 
-`tests/fixtures/runtime_v0_2_0` 是真实 v0.2.0 runtime 夹具。它的内容、文件模式和 digest 属于历史协议，不能按当前代码格式化或补丁；只有夹具外的说明和兼容测试可以更新。
-
-Windows 无法可靠保留 POSIX executable bit。runtime digest 只在 Windows 对协议中固定的 `bin/llm-hud` 使用规范 executable 标志，package validator 与冻结 stable control 必须保持同构。涉及 marker 大小、换行或精确回滚快照时，还要区分文本 ABI 的换行归一化与 binary snapshot 的逐字节语义。
+Windows 无法可靠保留 POSIX executable bit。runtime digest 只在 Windows 对协议中固定的 `bin/llm-hud` 使用规范 executable 标志，package validator 与冻结 stable control 必须保持同构。涉及 marker 大小、换行或精确恢复快照时，还要区分文本 ABI 的换行归一化与 binary snapshot 的逐字节语义。
 
 ## Provider 配置安全
 
@@ -111,7 +111,7 @@ macOS 默认没有 `sha256sum` 时，可使用 `shasum -a 256 -c SHA256SUMS`。
 - 一句话摘要；
 - Added / Changed / Fixed；
 - 用户可见的兼容性变化；
-- 升级与 `rollback` 注意事项；
+- 升级注意事项；
 - 已知问题。
 
 版本历史以 GitHub Releases 为准。只有在确定会持续维护时才增加独立 `CHANGELOG.md`，避免两份历史漂移。

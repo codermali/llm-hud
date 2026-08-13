@@ -318,7 +318,7 @@ else:
       confirm_or_keep "llm-hud $installed_version is already installed. Reinstall?"
       ;;
     upgrade)
-      printf 'Detected llm-hud %s; upgrading to %s (the previous runtime stays available via llm-hud rollback).\n' \
+      printf 'Detected llm-hud %s; upgrading to %s.\n' \
         "$installed_version" "$source_version"
       ;;
     downgrade)

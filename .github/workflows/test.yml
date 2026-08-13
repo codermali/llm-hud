@@ -197,7 +197,7 @@ jobs:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.9"
-      - name: Install, upgrade, roll back, diagnose, and uninstall through Git Bash
+      - name: Install, upgrade, diagnose, and uninstall through Git Bash
         shell: bash
         run: |
           test_root=$(cygpath -u "$RUNNER_TEMP")/llm-hud-windows
@@ -218,7 +218,6 @@ jobs:
           grep -qx '# llm-hud-managed-launcher-v1' "$launcher"
           "$launcher" --version
           "$launcher" doctor
-          first_version=$("$launcher" --version)
           first_active=$(awk 'NR == 1 { print $2 }' "$LLM_HUD_INSTALL_DIR/activation")
           test -n "$first_active"
 
@@ -238,14 +237,8 @@ jobs:
           second_active=$(awk 'NR == 1 { print $2 }' "$LLM_HUD_INSTALL_DIR/activation")
           test -n "$second_active"
           test "$second_active" != "$first_active"
+          test "$(awk 'NR == 1 { print $3 }' "$LLM_HUD_INSTALL_DIR/activation")" = -
           test "$("$launcher" --version)" = "llm-hud $next_version"
-          "$launcher" rollback
-          rolled_back_active=$(awk 'NR == 1 { print $2 }' "$LLM_HUD_INSTALL_DIR/activation")
-          rolled_back_previous=$(awk 'NR == 1 { print $3 }' "$LLM_HUD_INSTALL_DIR/activation")
-          test "$rolled_back_active" = "$first_active"
-          test "$rolled_back_previous" = "$second_active"
-          test "$("$launcher" --version)" = "$first_version"
-
           python -c 'import json, pathlib, sys; command = json.loads(pathlib.Path(sys.argv[1]).read_text())["statusLine"]["command"]; assert "\\" not in command, command' "$LLM_HUD_CLAUDE_SETTINGS"
           test "$(printf '{}' | "$launcher" render claude --no-color | head -n 1)" = existing
           "$launcher" uninstall

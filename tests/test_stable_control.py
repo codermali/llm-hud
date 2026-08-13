@@ -17,23 +17,17 @@ from llm_hud.runtime import (
     INSTALL_MARKER_VALUE,
     MAX_MANAGED_TEXT_SIZE,
     RUNTIME_MARKER_NAME,
-    Activation,
     RuntimeLayoutError,
-    activate,
-    finalize_runtime,
     initialize_layout,
-    read_activation,
     runtime_path,
-    source_digest,
     validate_runtime,
 )
+from tests.support import activate, finalize_runtime
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DISPATCHER_SOURCE = ROOT / "scripts" / "llm-hud-dispatcher"
 CONTROL_SOURCE = ROOT / "scripts" / "runtime_control.py"
-PREVIOUS_RUNTIME_FIXTURE = ROOT / "tests" / "fixtures" / "runtime_v0_2_0"
-PREVIOUS_RUNTIME_RELEASE = "0.2.0-98de8d3e9431"
 
 
 def install_stable_control(root: Path) -> Path:
@@ -109,41 +103,6 @@ def load_installed_control(root: Path):
 
 
 class StableDispatcherTests(unittest.TestCase):
-    def test_v0_2_0_fixture_keeps_its_released_digest(self):
-        marker = json.loads(
-            (PREVIOUS_RUNTIME_FIXTURE / RUNTIME_MARKER_NAME).read_text()
-        )
-
-        self.assertEqual(marker["release_id"], PREVIOUS_RUNTIME_RELEASE)
-        self.assertEqual(
-            source_digest(PREVIOUS_RUNTIME_FIXTURE), marker["content_sha256"]
-        )
-
-    @unittest.skipUnless(
-        sys.version_info >= (3, 11),
-        "the frozen v0.2.0 runtime requires Python 3.11 or newer",
-    )
-    def test_current_control_dispatches_and_rolls_back_to_v0_2_0_runtime(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "runtime"
-            root.mkdir()
-            dispatcher = install_stable_control(root)
-            shutil.copytree(
-                PREVIOUS_RUNTIME_FIXTURE,
-                root / "versions" / PREVIOUS_RUNTIME_RELEASE,
-            )
-            current = create_runtime(root, "current", "0.3.1")
-            activate(root, PREVIOUS_RUNTIME_RELEASE)
-            activate(root, current)
-
-            rolled_back = run_dispatcher(dispatcher, "rollback")
-
-            self.assertEqual(rolled_back.returncode, 0, rolled_back.stderr)
-            self.assertEqual(read_activation(root).active, PREVIOUS_RUNTIME_RELEASE)
-            dispatched = run_dispatcher(dispatcher, "--version")
-            self.assertEqual(dispatched.returncode, 0, dispatched.stderr)
-            self.assertEqual(dispatched.stdout.strip(), "llm-hud 0.2.0")
-
     def test_dispatches_arguments_from_a_path_with_spaces_and_quotes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "install space's"
@@ -158,46 +117,6 @@ class StableDispatcherTests(unittest.TestCase):
             payload = json.loads(result.stdout)
             self.assertEqual(payload["label"], "first")
             self.assertEqual(payload["arguments"], ["render", "a b", "quote's"])
-
-    def test_rolls_back_without_importing_a_broken_active_runtime(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "runtime"
-            root.mkdir()
-            dispatcher = install_stable_control(root)
-            first = create_runtime(root, "first", "1.0.0")
-            second = create_runtime(root, "second", "2.0.0")
-            activate(root, first)
-            activate(root, second)
-            (runtime_path(root, second) / "src" / "llm_hud" / "cli.py").write_text(
-                "this is not Python"
-            )
-
-            result = run_dispatcher(dispatcher, "rollback")
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn(f"from {second} to {first}", result.stdout)
-            self.assertEqual(read_activation(root), Activation(first, second))
-            dispatched = run_dispatcher(dispatcher, "doctor")
-            self.assertEqual(dispatched.returncode, 0, dispatched.stderr)
-            self.assertEqual(json.loads(dispatched.stdout)["label"], "first")
-
-    def test_rejects_a_damaged_previous_runtime_without_changing_activation(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "runtime"
-            root.mkdir()
-            dispatcher = install_stable_control(root)
-            first = create_runtime(root, "first", "1.0.0")
-            second = create_runtime(root, "second", "2.0.0")
-            activate(root, first)
-            activate(root, second)
-            (runtime_path(root, first) / "README.md").write_text("tampered")
-            before = (root / ACTIVATION_NAME).read_bytes()
-
-            result = run_dispatcher(dispatcher, "rollback")
-
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("digest", result.stderr)
-            self.assertEqual((root / ACTIVATION_NAME).read_bytes(), before)
 
     def test_rejects_a_symlinked_activation_record(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -233,6 +152,22 @@ class StableDispatcherTests(unittest.TestCase):
             self.assertNotEqual(malformed.returncode, 0)
             self.assertIn("invalid activation", malformed.stderr)
 
+    def test_dispatches_from_a_legacy_activation_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            dispatcher = install_stable_control(root)
+            release_id = create_runtime(root, "first", "1.0.0")
+            activate(root, release_id)
+            (root / ACTIVATION_NAME).write_text(
+                f"llm-hud-activation-v1 {release_id} 0.9.0-deadbeefdead\n"
+            )
+
+            result = run_dispatcher(dispatcher, "doctor")
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["label"], "first")
+
     def test_rejects_a_symlinked_stable_control(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "runtime"
@@ -244,7 +179,7 @@ class StableDispatcherTests(unittest.TestCase):
             control.unlink()
             control.symlink_to(external)
 
-            result = run_dispatcher(dispatcher, "rollback")
+            result = run_dispatcher(dispatcher, "doctor")
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("stable runtime control", result.stderr)
@@ -334,70 +269,6 @@ class RuntimeValidatorParityTests(unittest.TestCase):
 
                     self.assertEqual(package_accepts, expected)
                     self.assertEqual(stable_control_accepts, expected)
-
-
-class StableRollbackTests(unittest.TestCase):
-    def test_rollback_respects_the_shared_runtime_lock(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "runtime"
-            root.mkdir()
-            install_stable_control(root)
-            first = create_runtime(root, "first", "1.0.0")
-            second = create_runtime(root, "second", "2.0.0")
-            activate(root, first)
-            activate(root, second)
-            control = load_installed_control(root)
-
-            with control.RuntimeLock(root):
-                with self.assertRaisesRegex(control.ControlError, "in progress"):
-                    control.rollback(root, lock_timeout=0)
-
-            self.assertEqual(read_activation(root), Activation(second, first))
-
-    def test_activation_compare_and_swap_detects_in_place_changes(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "runtime"
-            root.mkdir()
-            install_stable_control(root)
-            first = create_runtime(root, "first", "1.0.0")
-            second = create_runtime(root, "second", "2.0.0")
-            activate(root, first)
-            activate(root, second)
-            control = load_installed_control(root)
-            current, snapshot = control._read_activation(root)
-            changed = control.Activation(current.previous, current.active)
-            (root / ACTIVATION_NAME).write_text(control.format_activation(changed))
-
-            with self.assertRaisesRegex(control.ControlError, "changed during rollback"):
-                control._atomic_write_activation(root, current, snapshot)
-
-            self.assertEqual(
-                (root / ACTIVATION_NAME).read_text(),
-                control.format_activation(changed),
-            )
-
-    def test_symlinked_lock_is_rejected_without_touching_its_target(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "runtime"
-            root.mkdir()
-            install_stable_control(root)
-            first = create_runtime(root, "first", "1.0.0")
-            second = create_runtime(root, "second", "2.0.0")
-            activate(root, first)
-            activate(root, second)
-            lock = root / ".llm-hud-update.lock"
-            lock.unlink()
-            external = root / "external-lock"
-            external.write_text("keep")
-            lock.symlink_to(external.name)
-            control = load_installed_control(root)
-
-            with self.assertRaisesRegex(control.ControlError, "lock"):
-                control.rollback(root)
-
-            self.assertEqual(external.read_text(), "keep")
-            self.assertEqual(read_activation(root), Activation(second, first))
-
 
 if __name__ == "__main__":
     unittest.main()

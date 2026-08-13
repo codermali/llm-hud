@@ -14,7 +14,6 @@ class KimiProvider(Provider):
     command = "kimi"
     capabilities = ProviderCapabilities(
         integration="builtin",
-        custom_renderer=False,
         persistent_metrics=("model", "cwd", "context"),
         on_demand_metrics=("quota",),
     )

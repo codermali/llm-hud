@@ -49,6 +49,11 @@ jobs:
           mkdir dist
           git archive --format=tar --prefix="llm-hud-$VERSION/" "$GITHUB_SHA" |
             gzip -n > dist/llm-hud.tar.gz
+          if tar -tzf dist/llm-hud.tar.gz |
+            grep -Eq '/(tests|\.github|docs|install\.sh)(/|$)'; then
+            echo "release archive contains repository-only development files" >&2
+            exit 1
+          fi
           cp install.sh dist/install.sh
           sed -i \
             "s/^embedded_release_tag='__LLM_HUD_RELEASE_TAG__'$/embedded_release_tag='$GITHUB_REF_NAME'/" \

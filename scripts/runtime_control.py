@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""Stable dispatch and rollback control for a versioned llm-hud install.
+"""Stable dispatch control for a versioned llm-hud install.
 
 This module intentionally imports no llm_hud package code until dispatch has
-validated the selected immutable runtime.  In particular, rollback continues
-to work when the active runtime cannot be imported or has been corrupted.
+validated the selected immutable runtime.
 """
 
 from __future__ import annotations
 
 import ast
-import errno
 import hashlib
 import importlib
 import json
@@ -17,17 +15,9 @@ import os
 import re
 import stat
 import sys
-import tempfile
-import time
 from dataclasses import dataclass
 from pathlib import Path
-from types import TracebackType
 from typing import Sequence
-
-if os.name == "nt":
-    import msvcrt
-else:
-    import fcntl
 
 
 INSTALL_MARKER = ".llm-hud-install-root"
@@ -37,9 +27,8 @@ LAYOUT_MARKER_VALUE = "llm-hud-versioned-layout-v1\n"
 ACTIVATION_FILE = "activation"
 ACTIVATION_PREFIX = "llm-hud-activation-v1"
 RUNTIME_MARKER = ".llm-hud-runtime.json"
-LOCK_FILE = ".llm-hud-update.lock"
 VERSIONS_DIRECTORY = "versions"
-NO_PREVIOUS = "-"
+EMPTY_ACTIVATION_SLOT = "-"
 CONTROL_RELATIVE = Path("control") / "runtime_control.py"
 RUNTIME_CONTENT = ("src", "bin", "README.md", "LICENSE", "pyproject.toml")
 MAX_MANAGED_TEXT_SIZE = 64 * 1024
@@ -51,29 +40,6 @@ VERSION = re.compile(
 )
 
 
-def _try_lock_descriptor(descriptor: int) -> None:
-    if os.name == "nt":
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        try:
-            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
-        except OSError as error:
-            if error.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK) or getattr(
-                error, "winerror", None
-            ) in (33, 36):
-                raise BlockingIOError(error.errno, str(error)) from error
-            raise
-        return
-    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-
-def _unlock_descriptor(descriptor: int) -> None:
-    if os.name == "nt":
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-        return
-    fcntl.flock(descriptor, fcntl.LOCK_UN)
-
-
 class ControlError(ValueError):
     """The managed runtime layout is absent, damaged, or unsafe."""
 
@@ -81,20 +47,13 @@ class ControlError(ValueError):
 @dataclass(frozen=True)
 class Activation:
     active: str
-    previous: str | None = None
 
     def __post_init__(self) -> None:
         validate_release_id(self.active)
-        if self.previous is not None:
-            validate_release_id(self.previous)
-            if self.previous == self.active:
-                raise ControlError("active and previous releases must differ")
 
 
 def validate_release_id(value: object) -> str:
     if not isinstance(value, str) or not RELEASE_ID.fullmatch(value):
-        raise ControlError(f"invalid release id: {value!r}")
-    if value in (".", ".."):
         raise ControlError(f"invalid release id: {value!r}")
     return value
 
@@ -190,25 +149,24 @@ def _require_stable_control(root: Path) -> None:
         raise ControlError(f"stable runtime control is not a regular managed file: {actual}")
 
 
-def format_activation(value: Activation) -> str:
-    previous = value.previous if value.previous is not None else NO_PREVIOUS
-    return f"{ACTIVATION_PREFIX} {value.active} {previous}\n"
-
-
 def parse_activation(text: str) -> Activation:
     parts = text.removesuffix("\n").split(" ")
     if len(parts) != 3 or parts[0] != ACTIVATION_PREFIX:
         raise ControlError("invalid activation record")
-    previous = None if parts[2] == NO_PREVIOUS else parts[2]
-    value = Activation(parts[1], previous)
-    if text != format_activation(value):
+    active = validate_release_id(parts[1])
+    legacy_previous = parts[2]
+    if legacy_previous != EMPTY_ACTIVATION_SLOT:
+        validate_release_id(legacy_previous)
+        if legacy_previous == active:
+            raise ControlError("active and previous releases must differ")
+    if text != f"{ACTIVATION_PREFIX} {active} {legacy_previous}\n":
         raise ControlError("activation record is not in canonical format")
-    return value
+    return Activation(active)
 
 
-def _read_activation(root: Path) -> tuple[Activation, str]:
+def _read_activation(root: Path) -> Activation:
     text = _read_owned_text(root / ACTIVATION_FILE, "activation record")
-    return parse_activation(text), text
+    return parse_activation(text)
 
 
 def _read_content_file(path: Path) -> tuple[bytes, bool]:
@@ -366,125 +324,6 @@ def _validate_runtime(root: Path, release_id: str) -> Path:
     return path
 
 
-def _fsync_directory(path: Path) -> None:
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    try:
-        descriptor = os.open(path, flags)
-    except OSError:
-        return
-    try:
-        os.fsync(descriptor)
-    except OSError:
-        pass
-    finally:
-        os.close(descriptor)
-
-
-def _atomic_write_activation(
-    root: Path, value: Activation, expected: str
-) -> None:
-    path = root / ACTIVATION_FILE
-    descriptor, temp_name = tempfile.mkstemp(prefix=".activation.", dir=root)
-    temp = Path(temp_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(format_activation(value))
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temp, 0o600)
-        current = _read_owned_text(path, "activation record")
-        try:
-            temp_metadata = temp.lstat()
-        except OSError as error:
-            raise ControlError(f"cannot verify activation update: {error}") from error
-        if current != expected:
-            raise ControlError("activation record changed during rollback")
-        if not stat.S_ISREG(temp_metadata.st_mode):
-            raise ControlError("temporary activation record is not a regular managed file")
-        try:
-            os.replace(temp, path)
-        except OSError as error:
-            raise ControlError(f"cannot replace activation record: {error}") from error
-        _fsync_directory(root)
-    finally:
-        try:
-            temp.unlink()
-        except OSError:
-            pass
-
-
-class RuntimeLock:
-    def __init__(self, root: Path, timeout: float = 10.0) -> None:
-        self.root = root
-        self.timeout = timeout
-        self._descriptor: int | None = None
-
-    def __enter__(self) -> RuntimeLock:
-        _require_install_ownership(self.root)
-        path = self.root / LOCK_FILE
-        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
-        try:
-            descriptor = os.open(path, flags, 0o600)
-        except OSError as error:
-            raise ControlError(f"cannot open update lock {path}: {error}") from error
-        try:
-            opened = os.fstat(descriptor)
-            current = path.lstat()
-        except OSError as error:
-            os.close(descriptor)
-            raise ControlError(f"cannot verify update lock {path}: {error}") from error
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or stat.S_ISLNK(current.st_mode)
-            or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
-        ):
-            os.close(descriptor)
-            raise ControlError(f"update lock is not a regular managed file: {path}")
-        deadline = time.monotonic() + max(0.0, self.timeout)
-        while True:
-            try:
-                _try_lock_descriptor(descriptor)
-                self._descriptor = descriptor
-                return self
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    os.close(descriptor)
-                    raise ControlError(
-                        "another runtime operation is in progress"
-                    ) from None
-                time.sleep(0.05)
-            except OSError as error:
-                os.close(descriptor)
-                raise ControlError(f"cannot lock runtime operations {path}: {error}") from error
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        del exc_type, exc_value, traceback
-        if self._descriptor is not None:
-            try:
-                _unlock_descriptor(self._descriptor)
-            finally:
-                os.close(self._descriptor)
-                self._descriptor = None
-
-
-def rollback(root: Path, *, lock_timeout: float = 10.0) -> Activation:
-    root = Path(root)
-    with RuntimeLock(root, timeout=lock_timeout):
-        _require_layout(root)
-        current, snapshot = _read_activation(root)
-        if current.previous is None:
-            raise ControlError("no previous runtime is available")
-        _validate_runtime(root, current.previous)
-        updated = Activation(active=current.previous, previous=current.active)
-        _atomic_write_activation(root, updated, snapshot)
-        return updated
-
-
 def _dispatch_runtime(root: Path, runtime: Path, arguments: Sequence[str]) -> int:
     if any(name == "llm_hud" or name.startswith("llm_hud.") for name in sys.modules):
         raise ControlError("runtime package was loaded before active runtime validation")
@@ -505,7 +344,7 @@ def _dispatch_runtime(root: Path, runtime: Path, arguments: Sequence[str]) -> in
 def dispatch(root: Path, arguments: Sequence[str]) -> int:
     root = Path(root)
     _require_layout(root)
-    activation, _ = _read_activation(root)
+    activation = _read_activation(root)
     runtime = _validate_runtime(root, activation.active)
     return _dispatch_runtime(root, runtime, arguments)
 
@@ -521,18 +360,12 @@ def preflight(root: Path, release_id: str, arguments: Sequence[str]) -> int:
 def run(root: Path, arguments: Sequence[str]) -> int:
     root = Path(root)
     _require_stable_control(root)
-    if arguments and arguments[0] == "rollback":
-        if len(arguments) != 1:
-            raise ControlError("usage: llm-hud rollback")
-        updated = rollback(root)
-        print(f"Rolled back llm-hud from {updated.previous} to {updated.active}.")
-        return 0
     return dispatch(root, arguments)
 
 
 def _main(arguments: Sequence[str]) -> int:
     if len(arguments) < 1:
-        raise ControlError("usage: runtime_control.py INSTALL_ROOT [rollback | COMMAND ...]")
+        raise ControlError("usage: runtime_control.py INSTALL_ROOT [COMMAND ...]")
     if len(arguments) >= 3 and arguments[1] == "--preflight-release":
         return preflight(Path(arguments[0]), arguments[2], arguments[3:])
     return run(Path(arguments[0]), arguments[1:])

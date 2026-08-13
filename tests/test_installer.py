@@ -52,7 +52,7 @@ def tracked_source_paths() -> list[Path]:
     return sorted(
         Path(os.fsdecode(raw))
         for raw in result.stdout.split(b"\0")
-        if raw
+        if raw and os.path.lexists(ROOT / Path(os.fsdecode(raw)))
     )
 
 
@@ -363,7 +363,6 @@ class InstallerRootSafetyTests(unittest.TestCase):
             activation = read_activation(install_dir)
             assert activation is not None
             validate_runtime(install_dir, activation.active)
-            self.assertIsNone(activation.previous)
             self.assertTrue((install_dir / "control" / "runtime_control.py").is_file())
             self.assertTrue((install_dir / "bin" / "llm-hud").is_file())
             launcher = root / "launcher-bin" / "llm-hud"
