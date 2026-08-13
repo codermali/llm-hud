@@ -163,6 +163,21 @@ class CodexProviderTests(unittest.TestCase):
                 self.assertEqual(provider.uninstall().status, "uninstalled")
             self.assertEqual(status_line(config), ["current-dir"])
 
+    def test_bom_config_reports_the_bom_instead_of_a_parse_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            original = "\ufeff[tui]\n".encode("utf-8")
+            config.write_bytes(original)
+            with Environment(
+                LLM_HUD_CODEX_CONFIG=str(config),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                result = CodexProvider().install("ignored")
+            self.assertEqual(result.status, "error")
+            self.assertIn("byte order mark", result.message)
+            self.assertEqual(config.read_bytes(), original)
+
     def test_uninstall_preserves_items_added_later(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

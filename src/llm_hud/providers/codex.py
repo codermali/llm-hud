@@ -61,6 +61,13 @@ def _load_config_snapshot(
     path = codex_config_path()
     target = target or resolve_file_target(path)
     text, snapshot = read_text_snapshot(target)
+    if text.startswith("\ufeff"):
+        # Surface the actual problem instead of a parser error pointing at
+        # line 1 column 1.
+        raise ValueError(
+            "the file begins with a UTF-8 byte order mark, which TOML "
+            "forbids; save it without a BOM and retry"
+        )
     return text, tomllib.loads(text), snapshot
 
 

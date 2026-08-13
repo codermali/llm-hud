@@ -142,6 +142,13 @@ def _load_settings_snapshot(
     text, snapshot = read_text_snapshot(target)
     if snapshot is None:
         return {}, None
+    if text.startswith("\ufeff"):
+        # Surface the actual problem instead of a parser error pointing at
+        # line 1 column 1.
+        raise ValueError(
+            f"Claude settings {path} begin with a UTF-8 byte order mark; "
+            "save the file without a BOM and retry"
+        )
     payload = json.loads(text)
     if not isinstance(payload, dict):
         raise ValueError(f"Claude settings must be a JSON object: {path}")

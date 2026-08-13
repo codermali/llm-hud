@@ -341,6 +341,21 @@ class ClaudeProviderTests(unittest.TestCase):
         self.assertEqual(output, "")
         popen.assert_not_called()
 
+    def test_bom_settings_report_the_bom_instead_of_a_parse_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = root / "settings.json"
+            original = "\ufeff{}".encode("utf-8")
+            settings.write_bytes(original)
+            with Environment(
+                LLM_HUD_CLAUDE_SETTINGS=str(settings),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+            ):
+                result = ClaudeProvider().install("/opt/llm-hud")
+            self.assertEqual(result.status, "error")
+            self.assertIn("byte order mark", result.message)
+            self.assertEqual(settings.read_bytes(), original)
+
     def test_uninstall_does_not_replace_later_user_change(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
