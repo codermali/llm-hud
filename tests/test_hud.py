@@ -110,6 +110,24 @@ class HudTests(unittest.TestCase):
             ANSI_RE.sub("", colored), render_hud(snapshot, color=False)
         )
 
+    def test_bar_color_agrees_with_the_displayed_percent_at_thresholds(self):
+        # The color follows the rounded label: "70% used" is never red and
+        # "71% used" always is; likewise for green/yellow at 40.
+        cases = (
+            (40.4, "32", " 40%"),
+            (40.6, "33", " 41%"),
+            (70.4, "33", " 70%"),
+            (70.6, "31", " 71%"),
+        )
+        for used, tone, label in cases:
+            with self.subTest(used=used):
+                snapshot = HudSnapshot(
+                    provider="Claude", windows=(UsageWindow("5h", used),)
+                )
+                rendered = render_hud(snapshot, color=True)
+                self.assertIn(f"\x1b[{tone}m{label}\x1b[0m", rendered)
+                self.assertIn(f"\x1b[{tone}m█", rendered)
+
     def test_reset_times_render_per_window_format(self):
         stamp = 1900000000.0
         local = datetime.fromtimestamp(stamp).astimezone()

@@ -101,23 +101,30 @@ def _compact_path(value: str | None) -> str | None:
     return "~" if not relative.parts else f"~/{relative.as_posix()}"
 
 
-def _percent(value: float | None) -> str:
+def _percent_value(value: float | None) -> int | None:
+    """Rounded percentage; color thresholds must follow the displayed number."""
     if value is None:
-        return "--"
+        return None
     value = max(0.0, min(100.0, value))
     if value >= 99.5:
-        return "100%"
+        return 100
     if value <= 0.5:
-        return "0%"
-    return f"{value:.0f}%"
+        return 0
+    return int(f"{value:.0f}")
+
+
+def _percent(value: float | None) -> str:
+    rounded = _percent_value(value)
+    return "--" if rounded is None else f"{rounded}%"
 
 
 def _used_color(value: float | None) -> str:
-    if value is None:
+    rounded = _percent_value(value)
+    if rounded is None:
         return "2"
-    if value <= 40:
+    if rounded <= 40:
         return "32"
-    if value <= 70:
+    if rounded <= 70:
         return "33"
     return "31"
 
