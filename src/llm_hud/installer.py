@@ -760,6 +760,15 @@ def _restore_file_snapshot(
             f"{description} changed before rollback; left it untouched: {path}"
         )
     if previous.content is None:
+        # The launcher lives outside the install root, where RuntimeLock only
+        # excludes installs sharing the same root; re-check at the last moment
+        # so a rollback cannot delete a file a cross-root install just wrote.
+        _assert_unchanged_snapshot(
+            path,
+            installed,
+            description,
+            maximum_size=maximum_size,
+        )
         try:
             path.unlink()
             fsync_directory(path.parent)
