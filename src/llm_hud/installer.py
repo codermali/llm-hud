@@ -400,12 +400,17 @@ def _read_launcher_content(path: Path) -> bytes | None:
     ).content
 
 
-def _preflight_external_launcher(root: Path, launcher: Path) -> None:
-    """Only absent launchers and our own managed form may be replaced."""
+def _require_launcher_outside_root(root: Path, launcher: Path) -> tuple[Path, Path]:
     root = root.resolve(strict=True)
     launcher = _canonical_file_path(launcher, "external launcher")
     if launcher.is_relative_to(root):
         raise RuntimeLayoutError("external launcher must be outside the install root")
+    return root, launcher
+
+
+def _preflight_external_launcher(root: Path, launcher: Path) -> None:
+    """Only absent launchers and our own managed form may be replaced."""
+    root, launcher = _require_launcher_outside_root(root, launcher)
     content = _read_launcher_content(launcher)
     if content is not None and not _known_launcher(
         content, root / DISPATCHER_DESTINATION
@@ -858,7 +863,9 @@ def _install_external_launcher_unlocked(
         raise RuntimeLayoutError(
             f"active runtime changed from {expected_active!r} to {actual_active!r}"
         )
-    _preflight_external_launcher(root, launcher)
+    # The managed-form check runs below against the same snapshot the install
+    # proceeds from; a separate preflight read would decide nothing here.
+    _require_launcher_outside_root(root, launcher)
     launcher_before = _snapshot_regular_file(
         launcher,
         "external launcher",
