@@ -99,6 +99,8 @@ def _verify_sdist(path: Path) -> None:
             if name.startswith(prefix)
         }
         _require_files(names, SDIST_PACKAGE_FILES, "sdist")
+        if f"{root}/PKG-INFO" not in archived_names:
+            raise ValueError("sdist is missing: PKG-INFO")
         member = archive.getmember(f"{root}/PKG-INFO")
         handle = archive.extractfile(member)
         if handle is None:
