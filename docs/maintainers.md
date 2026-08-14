@@ -39,7 +39,7 @@ activation v1 继续使用三字段磁盘格式。当前实现只使用 active �
 
 当前合同由 `tests/test_state_abi.py` 固定：
 
-- 兼容性基线是上一个发布版本 v0.4.0；
+- 兼容性基线是上一个发布版本 v0.4.1；
 - Claude 读取 schema 1、2，写 schema 2；
 - Codex 读取并写 schema 1；
 - provider transaction journal 使用 schema 1。
