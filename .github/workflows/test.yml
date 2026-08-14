@@ -224,6 +224,7 @@ jobs:
           second_source="$test_root/second-source"
           mkdir "$second_source"
           git archive --format=tar HEAD | tar -xf - -C "$second_source"
+          cp install.sh "$second_source/install.sh"
           version_file="$second_source/src/llm_hud/_version.py"
           next_version=$(python -I -B -c '
           import runpy, sys
