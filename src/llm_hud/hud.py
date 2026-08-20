@@ -35,6 +35,7 @@ class UsageWindow:
 class HudSnapshot:
     provider: str
     model: str | None = None
+    effort: str | None = None
     cwd: str | None = None
     windows: tuple[UsageWindow, ...] = ()
     columns: int | None = None
@@ -163,7 +164,11 @@ def _age_text(seconds: float) -> str:
 
 
 def _window_segment(
-    window: UsageWindow, color: bool, now: float, show_age: bool = True
+    window: UsageWindow,
+    color: bool,
+    now: float,
+    show_age: bool = True,
+    label_width: int = 2,
 ) -> str:
     used = window.used
     if used is not None and math.isnan(used):
@@ -194,7 +199,7 @@ def _window_segment(
     # row.  Suppressing the marker then genuinely buys columns back.
     if used is not None and not stale:
         percent = f"{percent} {_style('used', '2', color)}"
-    parts = [f"{window.label:<2}", bar, percent]
+    parts = [f"{window.label:<{label_width}}", bar, percent]
     if expired:
         parts.append(_style("↻ pending", "2", color))
         return "  ".join(parts)
@@ -210,6 +215,11 @@ def render_hud(snapshot: HudSnapshot, color: bool = True) -> str:
     columns = snapshot.columns if snapshot.columns and snapshot.columns > 0 else 120
     provider = _sanitize(snapshot.provider)
     model = _sanitize(snapshot.model) if snapshot.model else None
+    effort = _sanitize(snapshot.effort) if snapshot.effort else None
+    # The effort qualifies the model rather than standing alone, so it joins
+    # that field instead of earning its own separator.
+    if model and effort:
+        model = f"{model} {effort}"
     cwd = _compact_path(_sanitize(snapshot.cwd) if snapshot.cwd else None)
     if cwd:
         prefix = _display_width(provider)
@@ -229,14 +239,18 @@ def render_hud(snapshot: HudSnapshot, color: bool = True) -> str:
         return header
 
     now = _now()
-    segments = [_window_segment(window, color, now) for window in snapshot.windows]
+    width = max([2, *(_display_width(w.label) for w in snapshot.windows)])
+    segments = [
+        _window_segment(window, color, now, label_width=width)
+        for window in snapshot.windows
+    ]
     row = "    ".join(segments)
     if _display_width(row) <= columns:
         return f"{header}\n{row}"
     # The age marker is the least important field: drop it before spending a
     # whole extra line on every window.
     compact = [
-        _window_segment(window, color, now, show_age=False)
+        _window_segment(window, color, now, show_age=False, label_width=width)
         for window in snapshot.windows
     ]
     compact_row = "    ".join(compact)

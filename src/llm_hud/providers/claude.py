@@ -239,6 +239,13 @@ def _resets_at(window: object) -> float | None:
     return numeric if math.isfinite(numeric) else None
 
 
+def _effort(payload: dict[str, Any]) -> str | None:
+    """The session's reasoning effort; absent for models without one."""
+    effort = payload.get("effort")
+    level = effort.get("level") if isinstance(effort, dict) else None
+    return level if isinstance(level, str) and level else None
+
+
 def _terminal_columns(payload: dict[str, Any]) -> int | None:
     # Claude Code passes the terminal size to the status line command through
     # the COLUMNS/LINES environment variables; the JSON payload has no
@@ -359,12 +366,19 @@ def snapshot_from_payload(
         for key, label in (("five_hour", "5h"), ("seven_day", "7d"))
         if key in limits
     )
+    # context_window is reported for every account, not just subscribers, and
+    # it always describes the live session, so it is never aged.
+    context = _used(payload.get("context_window"))
+    if context is not None:
+        windows += (UsageWindow("ctx", context),)
+
     columns = _terminal_columns(payload)
     if columns is not None:
         columns = max(1, columns - STATUS_LINE_GUTTER)
     return HudSnapshot(
         provider="Claude",
         model=model_name if isinstance(model_name, str) else None,
+        effort=_effort(payload),
         cwd=cwd,
         windows=windows,
         columns=columns,

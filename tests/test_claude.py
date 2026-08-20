@@ -1265,6 +1265,69 @@ class ClaudeProviderTests(unittest.TestCase):
             snapshot = claude_module.snapshot_from_payload({})
         self.assertEqual(snapshot.columns, 1)
 
+    def test_context_window_renders_as_its_own_bar(self):
+        snapshot = claude_module.snapshot_from_payload(
+            {"context_window": {"used_percentage": 18.3, "remaining_percentage": 81.7}}
+        )
+        self.assertEqual(len(snapshot.windows), 1)
+        window = snapshot.windows[0]
+        self.assertEqual(window.label, "ctx")
+        self.assertEqual(window.used, 18.3)
+        self.assertIsNone(window.resets_at)
+        # The context describes the live session, so it is never aged.
+        self.assertIsNone(window.age_seconds)
+
+    def test_context_window_follows_the_account_windows(self):
+        snapshot = claude_module.snapshot_from_payload(
+            {
+                "rate_limits": {"five_hour": {"used_percentage": 24}},
+                "context_window": {"used_percentage": 18},
+            }
+        )
+        self.assertEqual([w.label for w in snapshot.windows], ["5h", "ctx"])
+
+    def test_absent_or_unusable_context_window_adds_no_bar(self):
+        for context in (None, {}, {"used_percentage": None}, {"used_percentage": True}, []):
+            with self.subTest(context=context):
+                snapshot = claude_module.snapshot_from_payload(
+                    {"context_window": context}
+                )
+                self.assertEqual(snapshot.windows, ())
+
+    def test_effort_level_is_read_when_the_model_reports_one(self):
+        self.assertEqual(
+            claude_module.snapshot_from_payload({"effort": {"level": "high"}}).effort,
+            "high",
+        )
+        for effort in (None, {}, {"level": ""}, {"level": 3}, "high"):
+            with self.subTest(effort=effort):
+                self.assertIsNone(
+                    claude_module.snapshot_from_payload({"effort": effort}).effort
+                )
+
+    def test_render_shows_effort_and_context_alongside_the_quota(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw = json.dumps(
+                {
+                    "model": {"display_name": "Opus"},
+                    "effort": {"level": "high"},
+                    "workspace": {"current_dir": str(root / "project")},
+                    "context_window": {"used_percentage": 18},
+                    "rate_limits": {"five_hour": {"used_percentage": 24}},
+                }
+            ).encode()
+            with Environment(
+                LLM_HUD_HOME=str(root),
+                LLM_HUD_STATE_DIR=str(root / "state"),
+                COLUMNS=None,
+            ):
+                self.assertEqual(
+                    render(raw, color=False),
+                    "Claude · Opus high · ~/project\n"
+                    "5h   ██░░░░░░░░   24% used    ctx  ██░░░░░░░░   18% used",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

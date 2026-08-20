@@ -280,6 +280,45 @@ class HudTests(unittest.TestCase):
         self.assertEqual(len(cramped.split("\n")), 3)
         self.assertIn("·8m", cramped)
 
+    def test_effort_qualifies_the_model_without_its_own_separator(self):
+        snapshot = HudSnapshot(
+            provider="Claude", model="Opus", effort="high", cwd="/home/example/p"
+        )
+        with Environment(LLM_HUD_HOME="/home/example"):
+            self.assertEqual(render_hud(snapshot, color=False), "Claude · Opus high · ~/p")
+
+    def test_effort_without_a_model_is_not_shown(self):
+        snapshot = HudSnapshot(provider="Claude", effort="high")
+        self.assertEqual(render_hud(snapshot, color=False), "Claude")
+
+    def test_effort_widens_the_prefix_the_path_is_truncated_against(self):
+        without = HudSnapshot(
+            provider="Claude", model="Opus", cwd="/very/long/path/to/a/project", columns=40
+        )
+        with_effort = HudSnapshot(
+            provider="Claude",
+            model="Opus",
+            effort="high",
+            cwd="/very/long/path/to/a/project",
+            columns=40,
+        )
+        for snapshot in (without, with_effort):
+            rendered = render_hud(snapshot, color=False)
+            self.assertLessEqual(len(rendered), 40)
+        self.assertLess(
+            len(render_hud(with_effort, color=False).split(" · ")[-1]),
+            len(render_hud(without, color=False).split(" · ")[-1]),
+        )
+
+    def test_window_labels_align_to_the_widest_label(self):
+        snapshot = HudSnapshot(
+            provider="Claude",
+            windows=(UsageWindow("5h", 76), UsageWindow("ctx", 18)),
+        )
+        rendered = render_hud(snapshot, color=False)
+        self.assertIn("5h   ███", rendered)
+        self.assertIn("ctx  ██░", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
