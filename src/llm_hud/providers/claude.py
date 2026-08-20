@@ -59,6 +59,12 @@ DEFAULT_REFRESH_INTERVAL = 30
 # staleness information rather than failing a render.
 OBSERVATION_SCHEMA = 1
 
+# Claude Code lays the status line out to the right of a fixed two-column
+# gutter, so the text never receives the full terminal width. Rendering
+# against COLUMNS alone overflows by exactly that much and makes Claude Code
+# wrap the row we already decided would fit.
+STATUS_LINE_GUTTER = 2
+
 
 def _matches_original(settings: dict[str, Any], state: dict[str, Any]) -> bool:
     """The live settings hold exactly the pre-installation statusLine."""
@@ -353,12 +359,15 @@ def snapshot_from_payload(
         for key, label in (("five_hour", "5h"), ("seven_day", "7d"))
         if key in limits
     )
+    columns = _terminal_columns(payload)
+    if columns is not None:
+        columns = max(1, columns - STATUS_LINE_GUTTER)
     return HudSnapshot(
         provider="Claude",
         model=model_name if isinstance(model_name, str) else None,
         cwd=cwd,
         windows=windows,
-        columns=_terminal_columns(payload),
+        columns=columns,
     )
 
 

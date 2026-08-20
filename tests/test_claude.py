@@ -1253,6 +1253,18 @@ class ClaudeProviderTests(unittest.TestCase):
             self.assertIn("·8m", aged)
             self.assertNotIn("used", aged)
 
+    def test_rendering_width_reserves_the_status_line_gutter(self):
+        # Claude Code indents the status line past a fixed gutter, so a row
+        # sized against the raw COLUMNS is exactly that much too wide.
+        with Environment(COLUMNS="80"):
+            snapshot = claude_module.snapshot_from_payload({})
+        self.assertEqual(snapshot.columns, 80 - claude_module.STATUS_LINE_GUTTER)
+
+    def test_a_terminal_narrower_than_the_gutter_keeps_a_usable_width(self):
+        with Environment(COLUMNS="1"):
+            snapshot = claude_module.snapshot_from_payload({})
+        self.assertEqual(snapshot.columns, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
