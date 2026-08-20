@@ -7,6 +7,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from llm_hud.hud import HudSnapshot, UsageWindow, render_hud
 from llm_hud.paths import (
     claude_settings_path,
     provider_journal_path,
+    provider_observation_path,
     provider_state_path,
 )
 from llm_hud.providers.base import (
@@ -45,6 +47,17 @@ from llm_hud.storage import (
 # Bump the written schema only together with tests/test_state_abi.py.
 STATE_SCHEMAS = frozenset((1, 2))
 _CONFLICT_MESSAGE = conflict_message("statusLine")
+
+# Claude Code only re-runs the status-line command on session events unless
+# statusLine.refreshInterval asks for a timer, so without one the HUD freezes
+# between assistant messages and can keep showing a window that has already
+# reset.  Seconds; the user's own value always wins.
+DEFAULT_REFRESH_INTERVAL = 30
+
+# Schema for the recorded rate-limit observations. Unlike installation state
+# this file is a disposable cache: an unreadable or unknown one degrades to no
+# staleness information rather than failing a render.
+OBSERVATION_SCHEMA = 1
 
 
 def _matches_original(settings: dict[str, Any], state: dict[str, Any]) -> bool:
@@ -148,6 +161,8 @@ def _configured_status_line(
     configured.update({"type": "command", "command": command})
     if drop_refresh_interval:
         configured.pop("refreshInterval", None)
+    elif "refreshInterval" not in configured:
+        configured["refreshInterval"] = DEFAULT_REFRESH_INTERVAL
     return configured
 
 
@@ -239,7 +254,86 @@ def _terminal_columns(payload: dict[str, Any]) -> int | None:
     return columns
 
 
-def snapshot_from_payload(payload: dict[str, Any]) -> HudSnapshot:
+def _parsed_limits(
+    payload: dict[str, Any],
+) -> dict[str, tuple[float | None, float | None]]:
+    """The rate-limit windows the payload carries, in render-ready form."""
+    limits = payload.get("rate_limits")
+    limits = limits if isinstance(limits, dict) else {}
+    return {
+        key: (_used(limits[key]), _resets_at(limits[key]))
+        for key in ("five_hour", "seven_day")
+        if key in limits
+    }
+
+
+def _read_observations(path: Path) -> dict[str, Any]:
+    """Read recorded observations; anything unusable reads as none recorded."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(payload, dict) or payload.get("schema") != OBSERVATION_SCHEMA:
+        return {}
+    windows = payload.get("windows")
+    return windows if isinstance(windows, dict) else {}
+
+
+def _observed_at(
+    recorded: object, used: float | None, resets_at: float | None
+) -> float | None:
+    """When a recorded entry describing exactly these values was first seen."""
+    if not isinstance(recorded, dict):
+        return None
+    if recorded.get("used") != used or recorded.get("resets_at") != resets_at:
+        return None
+    stamp = recorded.get("observed_at")
+    if isinstance(stamp, bool) or not isinstance(stamp, (int, float)):
+        return None
+    return float(stamp)
+
+
+def _record_observations(
+    parsed: dict[str, tuple[float | None, float | None]], now: float
+) -> dict[str, float]:
+    """Age each window against the last time its reported values changed.
+
+    Claude Code reports the usage it last observed but never when it observed
+    it, and it only refreshes those numbers when an API response arrives.
+    Rate limits are account-wide, so a changed value is a new observation no
+    matter which session saw it, and an unchanged one means nothing has moved
+    since it was recorded.  Two observations that happen to agree overstate
+    the age, which is the safe direction: this never presents a stale number
+    as current.
+    """
+    path = provider_observation_path("claude")
+    recorded = _read_observations(path)
+    ages: dict[str, float] = {}
+    windows: dict[str, Any] = {}
+    for key, (used, resets_at) in parsed.items():
+        observed_at = _observed_at(recorded.get(key), used, resets_at)
+        # A clock that moved backwards would otherwise report a future
+        # observation and mark the window fresh forever.
+        if observed_at is None or observed_at > now:
+            observed_at = now
+        ages[key] = now - observed_at
+        windows[key] = {
+            "used": used,
+            "resets_at": resets_at,
+            "observed_at": observed_at,
+        }
+    if windows != recorded:
+        try:
+            atomic_write_json(path, {"schema": OBSERVATION_SCHEMA, "windows": windows})
+        except OSError:
+            pass  # the age marker is cosmetic; a HUD tick must not fail on it
+    return ages
+
+
+def snapshot_from_payload(
+    payload: dict[str, Any], *, ages: dict[str, float] | None = None
+) -> HudSnapshot:
     model = payload.get("model")
     model_name = model.get("display_name") if isinstance(model, dict) else None
 
@@ -252,10 +346,10 @@ def snapshot_from_payload(payload: dict[str, Any]) -> HudSnapshot:
     # rate_limits appears only for Claude subscription accounts and only after
     # the first response; each window may be independently absent.  Absent data
     # renders nothing rather than a misleading placeholder.
-    limits = payload.get("rate_limits")
-    limits = limits if isinstance(limits, dict) else {}
+    limits = _parsed_limits(payload)
+    ages = ages or {}
     windows = tuple(
-        UsageWindow(label, _used(limits[key]), _resets_at(limits[key]))
+        UsageWindow(label, limits[key][0], limits[key][1], ages.get(key))
         for key, label in (("five_hour", "5h"), ("seven_day", "7d"))
         if key in limits
     )
@@ -268,8 +362,10 @@ def snapshot_from_payload(payload: dict[str, Any]) -> HudSnapshot:
     )
 
 
-def render_footer(payload: dict[str, Any], color: bool = True) -> str:
-    return render_hud(snapshot_from_payload(payload), color=color)
+def render_footer(
+    payload: dict[str, Any], color: bool = True, *, ages: dict[str, float] | None = None
+) -> str:
+    return render_hud(snapshot_from_payload(payload, ages=ages), color=color)
 
 
 def _kill_delegated(process: subprocess.Popen) -> None:
@@ -349,7 +445,12 @@ def render(raw: bytes, color: bool | None = None) -> str:
         payload = {}
     if color is None:
         color = not bool(os.environ.get("NO_COLOR"))
-    footer = render_footer(payload, color=color)
+    try:
+        ages = _record_observations(_parsed_limits(payload), time.time())
+    except (OSError, RuntimeError, ValueError):
+        # Staleness is an enhancement; a HUD without it still beats no HUD.
+        ages = {}
+    footer = render_footer(payload, color=color, ages=ages)
     try:
         state = read_provider_state(
             provider_state_path("claude"), supported_schemas=STATE_SCHEMAS

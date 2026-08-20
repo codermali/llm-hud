@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import time
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
@@ -14,6 +15,11 @@ from llm_hud.paths import home_dir
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 BAR_WIDTH = 10
+# Claude Code refreshes rate limits only when an API response arrives, so a
+# window can sit unchanged for minutes.  Mark one stale once it has outlived
+# several status-line ticks, which is long enough that the number on screen
+# no longer describes the current session.
+STALE_AFTER_SECONDS = 120.0
 WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
@@ -22,6 +28,7 @@ class UsageWindow:
     label: str
     used: float | None = None
     resets_at: float | None = None
+    age_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -142,24 +149,60 @@ def _reset_text(window: UsageWindow) -> str | None:
     return reset.strftime("%H:%M" if window.label == "5h" else "%a %H:%M")
 
 
-def _window_segment(window: UsageWindow, color: bool) -> str:
+def _now() -> float:
+    return time.time()
+
+
+def _age_text(seconds: float) -> str:
+    """A one-unit observation age; the marker only has to convey the order."""
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"·{max(1, minutes)}m"
+    hours = minutes // 60
+    return f"·{hours}h" if hours < 24 else f"·{hours // 24}d"
+
+
+def _window_segment(
+    window: UsageWindow, color: bool, now: float, show_age: bool = True
+) -> str:
     used = window.used
     if used is not None and math.isnan(used):
         used = None
+    # Past its reset time the window has rolled over, so the last observation
+    # describes a window that no longer exists.  Report missing data rather
+    # than a percentage that is certainly wrong.
+    expired = window.resets_at is not None and now > window.resets_at
+    if expired:
+        used = None
+    stale = (
+        not expired
+        and window.age_seconds is not None
+        and window.age_seconds >= STALE_AFTER_SECONDS
+    )
     if used is None:
         filled = 0
     else:
         bounded = max(0.0, min(100.0, used))
         filled = max(0, min(BAR_WIDTH, int(bounded / 10 + 0.5)))
-    tone = _used_color(used)
+    # A stale window drops to the dim tone so the usage colors only ever speak
+    # for a current observation.
+    tone = "2" if stale else _used_color(used)
     bar = _style("█" * filled, tone, color) + _style("░" * (BAR_WIDTH - filled), "2", color)
     percent = _style(f"{_percent(used):>4}", tone, color)
-    if used is not None:
+    # A stale window trades "used" for the age marker, so it occupies the same
+    # width as the current one it replaces and going stale never reflows the
+    # row.  Suppressing the marker then genuinely buys columns back.
+    if used is not None and not stale:
         percent = f"{percent} {_style('used', '2', color)}"
     parts = [f"{window.label:<2}", bar, percent]
+    if expired:
+        parts.append(_style("↻ pending", "2", color))
+        return "  ".join(parts)
     reset = _reset_text(window)
     if reset:
         parts.append(_style(f"↻ {reset}", "2", color))
+    if stale and show_age:
+        parts.append(_style(_age_text(window.age_seconds), "2", color))
     return "  ".join(parts)
 
 
@@ -185,8 +228,18 @@ def render_hud(snapshot: HudSnapshot, color: bool = True) -> str:
     if not snapshot.windows:
         return header
 
-    segments = [_window_segment(window, color) for window in snapshot.windows]
+    now = _now()
+    segments = [_window_segment(window, color, now) for window in snapshot.windows]
     row = "    ".join(segments)
     if _display_width(row) <= columns:
         return f"{header}\n{row}"
+    # The age marker is the least important field: drop it before spending a
+    # whole extra line on every window.
+    compact = [
+        _window_segment(window, color, now, show_age=False)
+        for window in snapshot.windows
+    ]
+    compact_row = "    ".join(compact)
+    if _display_width(compact_row) <= columns:
+        return f"{header}\n{compact_row}"
     return "\n".join([header, *segments])

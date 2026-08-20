@@ -25,6 +25,11 @@ def provider_journal_path(provider_id: str) -> Path:
     return state_dir() / "providers" / f"{provider_id}.journal.json"
 
 
+def provider_observation_path(provider_id: str) -> Path:
+    """Where a provider records what it last saw, for staleness reporting."""
+    return state_dir() / "observations" / f"{provider_id}.json"
+
+
 def claude_settings_path() -> Path:
     override = os.environ.get("LLM_HUD_CLAUDE_SETTINGS")
     if override:

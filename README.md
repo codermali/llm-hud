@@ -17,6 +17,20 @@ Claude · Opus · ~/projects/example
 
 Claude 的条形图表示已用比例，超过 70% 时变红。窄终端会自动换行或压缩路径。
 
+Claude Code 只在收到 API 响应时刷新额度，因此数字可能停留在上一次观测。超过两分钟没有变化的窗口会转为暗色，并标出观测已有多久：
+
+```text
+5h  ██░░░░░░░░   24%  ↻ 14:30  ·8m    7d  ████░░░░░░   41%  ↻ Fri 09:00  ·8m
+```
+
+窗口过了重置时刻后，旧的百分比已经作废，此时显示 `--` 与 `↻ pending`，等待下一次观测：
+
+```text
+5h  ░░░░░░░░░░    --  ↻ pending    7d  ████░░░░░░   41% used  ↻ Fri 09:00
+```
+
+标记本身不发起任何网络请求，也不读取账号凭据；它只比较 Claude Code 报来的数值是否变化。终端太窄时会先舍弃这个标记，再考虑换行。
+
 Codex CLI 由自身渲染，LLM HUD 只选择并排列原生字段：
 
 ```text
@@ -29,7 +43,7 @@ Codex 的额度和上下文字段显示剩余比例。
 
 | 工具 | LLM HUD 的动作 | 常驻信息 | 版本要求 |
 | --- | --- | --- | --- |
-| Claude Code | 安装本地状态栏命令 | 模型、目录、5 小时与 7 天额度 | 基础状态栏 ≥ 1.0.71；完整体验建议 ≥ 2.1.153 |
+| Claude Code | 安装本地状态栏命令 | 模型、目录、5 小时与 7 天额度、观测新鲜度 | 基础状态栏 ≥ 1.0.71；完整体验建议 ≥ 2.1.153 |
 | Codex CLI | 配置原生 `[tui].status_line` | 模型、目录、5 小时与周额度、上下文 | ≥ 0.99.0 |
 | Kimi CLI | 检测但不修改配置 | 保留 Kimi 内置工具栏信息 | LLM HUD 没有额外配置版本要求 |
 
@@ -65,7 +79,7 @@ curl -fsSL https://github.com/codermali/llm-hud/releases/latest/download/install
 
 ## 它会修改什么
 
-- Claude Code：配置用户 `settings.json` 中的 `statusLine`，并保留安装前的值以便恢复。设置了 `CLAUDE_CONFIG_DIR` 时使用该目录。
+- Claude Code：配置用户 `settings.json` 中的 `statusLine`，并保留安装前的值以便恢复。设置了 `CLAUDE_CONFIG_DIR` 时使用该目录。没有 `statusLine.refreshInterval` 时 Claude Code 只在会话事件后重绘状态栏，因此安装会补上 30 秒的默认值；你自己设过的值不会被覆盖，卸载时一并还原。
 - Codex CLI：保守修改用户 `config.toml` 中的 `[tui].status_line`，并保存原字段。设置了 `CODEX_HOME` 时使用该目录。
 - Kimi CLI：不修改配置，继续使用 Kimi 自带的底部工具栏。
 - LLM HUD：默认将运行时、启动器和恢复状态分别保存在 `~/.local/share/llm-hud`、`~/.local/bin/llm-hud` 和 `~/.config/llm-hud`。
@@ -168,7 +182,7 @@ curl -fsSL https://github.com/codermali/llm-hud/releases/latest/download/install
 | `LLM_HUD_PYTHON` | 固定运行 LLM HUD 的 Python | 自动寻找 Python 3.9+ |
 | `LLM_HUD_INSTALL_DIR` | 版本化运行时目录 | `$HOME/.local/share/llm-hud` |
 | `LLM_HUD_BIN_DIR` | 启动器目录 | `$HOME/.local/bin` |
-| `LLM_HUD_STATE_DIR` | provider 恢复状态目录 | 当前用户 home 下的 `.config/llm-hud`；设置 `LLM_HUD_HOME` 后随之改变 |
+| `LLM_HUD_STATE_DIR` | provider 恢复状态与观测缓存目录 | 当前用户 home 下的 `.config/llm-hud`；设置 `LLM_HUD_HOME` 后随之改变 |
 | `LLM_HUD_HOME` | provider 配置查找、默认状态目录和 HUD 路径缩写使用的 home | 当前用户 home；不改变 Shell 安装器从 `$HOME` 推导的运行时和启动器目录 |
 | `LLM_HUD_TARBALL_URL` | 自定义源码包地址 | 与安装脚本同版本的 GitHub Release 包 |
 | `LLM_HUD_CHECKSUM_URL` | 自定义 SHA-256 清单 | 默认包使用同一 Release 的清单；自定义 tarball 时必须显式设置，否则跳过校验 |

@@ -5,7 +5,13 @@ import unittest
 from datetime import datetime
 from unittest import mock
 
-from llm_hud.hud import ANSI_RE, HudSnapshot, UsageWindow, render_hud
+from llm_hud.hud import (
+    ANSI_RE,
+    STALE_AFTER_SECONDS,
+    HudSnapshot,
+    UsageWindow,
+    render_hud,
+)
 from tests.support import Environment
 
 
@@ -187,6 +193,92 @@ class HudTests(unittest.TestCase):
         rendered = render_hud(snapshot, color=False)
         self.assertEqual(rendered, "Claude · Opus · …e/deeply/nested/project")
         self.assertLessEqual(len(rendered), 40)
+
+    def test_fresh_observations_render_unchanged(self):
+        snapshot = HudSnapshot(
+            provider="Claude",
+            windows=(UsageWindow("5h", 76, age_seconds=STALE_AFTER_SECONDS - 1),),
+        )
+        self.assertEqual(
+            render_hud(snapshot, color=False),
+            "Claude\n5h  ████████░░   76% used",
+        )
+
+    def test_stale_observations_are_marked_with_their_age(self):
+        snapshot = HudSnapshot(
+            provider="Claude",
+            windows=(UsageWindow("5h", 76, age_seconds=8 * 60),),
+        )
+        self.assertEqual(
+            render_hud(snapshot, color=False),
+            "Claude\n5h  ████████░░   76%  ·8m",
+        )
+
+    def test_stale_observations_drop_the_usage_color(self):
+        window = UsageWindow("5h", 76, age_seconds=8 * 60)
+        rendered = render_hud(HudSnapshot(provider="Claude", windows=(window,)))
+        # 31 is the over-70% red the same window earns while it is current.
+        self.assertNotIn("\033[31m", rendered)
+        fresh = render_hud(
+            HudSnapshot(provider="Claude", windows=(UsageWindow("5h", 76),))
+        )
+        self.assertIn("\033[31m", fresh)
+
+    def test_age_marker_uses_one_unit(self):
+        for seconds, expected in (
+            (STALE_AFTER_SECONDS, "·2m"),
+            (59 * 60, "·59m"),
+            (60 * 60, "·1h"),
+            (23 * 3600, "·23h"),
+            (50 * 3600, "·2d"),
+        ):
+            with self.subTest(seconds=seconds):
+                snapshot = HudSnapshot(
+                    provider="Claude",
+                    windows=(UsageWindow("5h", 76, age_seconds=seconds),),
+                )
+                self.assertIn(expected, render_hud(snapshot, color=False))
+
+    def test_window_past_its_reset_time_reports_missing_data(self):
+        snapshot = HudSnapshot(
+            provider="Claude",
+            windows=(UsageWindow("5h", 76, resets_at=1000.0, age_seconds=9999.0),),
+        )
+        with mock.patch("llm_hud.hud._now", return_value=1001.0):
+            rendered = render_hud(snapshot, color=False)
+        self.assertEqual(rendered, "Claude\n5h  ░░░░░░░░░░    --  ↻ pending")
+
+    def test_window_before_its_reset_time_keeps_its_usage(self):
+        snapshot = HudSnapshot(
+            provider="Claude", windows=(UsageWindow("5h", 76, resets_at=1000.0),)
+        )
+        with mock.patch("llm_hud.hud._now", return_value=999.0):
+            rendered = render_hud(snapshot, color=False)
+        self.assertIn("76% used", rendered)
+        self.assertNotIn("pending", rendered)
+
+    def test_narrow_terminals_drop_the_age_marker_before_wrapping(self):
+        windows = (
+            UsageWindow("5h", 76, age_seconds=8 * 60),
+            UsageWindow("7d", 59, age_seconds=8 * 60),
+        )
+        wide = render_hud(HudSnapshot(provider="Claude", windows=windows, columns=80))
+        self.assertIn("·8m", wide)
+        self.assertEqual(len(wide.split("\n")), 2)
+
+        # One column short of the marked row: the ages go, the single row stays.
+        narrow = render_hud(
+            HudSnapshot(provider="Claude", windows=windows, columns=51)
+        )
+        self.assertNotIn("·8m", narrow)
+        self.assertEqual(len(narrow.split("\n")), 2)
+
+        # Too narrow even without them, so each window earns its own line.
+        cramped = render_hud(
+            HudSnapshot(provider="Claude", windows=windows, columns=30)
+        )
+        self.assertEqual(len(cramped.split("\n")), 3)
+        self.assertIn("·8m", cramped)
 
 
 if __name__ == "__main__":

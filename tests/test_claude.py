@@ -80,7 +80,10 @@ class ClaudeProviderTests(unittest.TestCase):
                     configured["statusLine"]["command"],
                     "/opt/llm-hud render claude",
                 )
-                self.assertNotIn("refreshInterval", configured["statusLine"])
+                self.assertEqual(
+                    configured["statusLine"]["refreshInterval"],
+                    claude_module.DEFAULT_REFRESH_INTERVAL,
+                )
                 installation_state = json.loads(
                     (state / "providers" / "claude.json").read_text()
                 )
@@ -717,6 +720,13 @@ class ClaudeProviderTests(unittest.TestCase):
                 state["schema"] = 1
                 state.pop("installed_status_line")
                 state_path.write_text(json.dumps(state))
+                # A schema-1 install came from a release that stripped
+                # refreshInterval, so its settings never carried one either.
+                # Reconstruction is only deterministic against the config that
+                # release would actually have written.
+                live = json.loads(settings.read_text())
+                live["statusLine"].pop("refreshInterval", None)
+                settings.write_text(json.dumps(live))
 
                 result = provider.uninstall()
 
@@ -1116,6 +1126,132 @@ class ClaudeProviderTests(unittest.TestCase):
 
             self.assertFalse(configured)
             self.assertIn("installation state is missing", detail)
+
+    def test_unchanged_rate_limits_age_across_renders(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "state"
+            parsed = {"five_hour": (24.0, 1000.0)}
+            with Environment(LLM_HUD_STATE_DIR=str(state)):
+                first = claude_module._record_observations(parsed, 500.0)
+                later = claude_module._record_observations(parsed, 560.0)
+                # A moved value is a new observation no matter which session
+                # produced it, so the age restarts.
+                moved = claude_module._record_observations(
+                    {"five_hour": (25.0, 1000.0)}, 620.0
+                )
+            self.assertEqual(first["five_hour"], 0.0)
+            self.assertEqual(later["five_hour"], 60.0)
+            self.assertEqual(moved["five_hour"], 0.0)
+
+    def test_a_reset_time_change_alone_counts_as_a_new_observation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "state"
+            with Environment(LLM_HUD_STATE_DIR=str(state)):
+                claude_module._record_observations({"5h": (0.0, 1000.0)}, 500.0)
+                rolled = claude_module._record_observations(
+                    {"5h": (0.0, 2000.0)}, 560.0
+                )
+            self.assertEqual(rolled["5h"], 0.0)
+
+    def test_unreadable_observations_degrade_to_a_fresh_reading(self):
+        for content in ("{broken", json.dumps({"schema": 99, "windows": {}}), "[]"):
+            with self.subTest(content=content):
+                with tempfile.TemporaryDirectory() as directory:
+                    state = Path(directory) / "state"
+                    path = state / "observations" / "claude.json"
+                    path.parent.mkdir(parents=True)
+                    path.write_text(content)
+                    with Environment(LLM_HUD_STATE_DIR=str(state)):
+                        ages = claude_module._record_observations(
+                            {"five_hour": (24.0, None)}, 500.0
+                        )
+                        self.assertEqual(ages["five_hour"], 0.0)
+                        # The unusable file is replaced, so the next tick ages.
+                        again = claude_module._record_observations(
+                            {"five_hour": (24.0, None)}, 560.0
+                        )
+                    self.assertEqual(again["five_hour"], 60.0)
+
+    def test_an_observation_from_the_future_reads_as_fresh(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "state"
+            path = state / "observations" / "claude.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema": claude_module.OBSERVATION_SCHEMA,
+                        "windows": {
+                            "five_hour": {
+                                "used": 24.0,
+                                "resets_at": None,
+                                "observed_at": 900.0,
+                            }
+                        },
+                    }
+                )
+            )
+            with Environment(LLM_HUD_STATE_DIR=str(state)):
+                ages = claude_module._record_observations(
+                    {"five_hour": (24.0, None)}, 500.0
+                )
+            self.assertEqual(ages["five_hour"], 0.0)
+
+    def test_an_unwritable_observation_cache_still_renders(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / "state"
+            state.mkdir()
+            # A regular file where the cache directory belongs fails every
+            # read and write against it.
+            (state / "observations").write_text("not a directory")
+            raw = json.dumps(
+                {
+                    "model": {"display_name": "Opus"},
+                    "rate_limits": {"five_hour": {"used_percentage": 24}},
+                }
+            ).encode()
+            with Environment(
+                LLM_HUD_STATE_DIR=str(state), LLM_HUD_HOME=str(root), COLUMNS=None
+            ):
+                self.assertEqual(
+                    render(raw, color=False),
+                    "Claude · Opus\n5h  ██░░░░░░░░   24% used",
+                )
+
+    def test_payloads_without_rate_limits_record_nothing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / "state"
+            with Environment(
+                LLM_HUD_STATE_DIR=str(state), LLM_HUD_HOME=str(root), COLUMNS=None
+            ):
+                render(b'{"model":{"display_name":"Opus"}}', color=False)
+            self.assertFalse((state / "observations" / "claude.json").exists())
+
+    def test_render_marks_a_window_that_has_stopped_moving(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / "state"
+            raw = json.dumps(
+                {
+                    "model": {"display_name": "Opus"},
+                    "rate_limits": {"five_hour": {"used_percentage": 24}},
+                }
+            ).encode()
+            with Environment(
+                LLM_HUD_STATE_DIR=str(state), LLM_HUD_HOME=str(root), COLUMNS=None
+            ):
+                self.assertIn("24% used", render(raw, color=False))
+                # Rewind the recorded observation to stand in for an idle
+                # stretch in which Claude Code reported the same number.
+                path = state / "observations" / "claude.json"
+                payload = json.loads(path.read_text())
+                payload["windows"]["five_hour"]["observed_at"] -= 8 * 60
+                path.write_text(json.dumps(payload))
+                aged = render(raw, color=False)
+            self.assertIn("·8m", aged)
+            self.assertNotIn("used", aged)
 
 
 if __name__ == "__main__":
