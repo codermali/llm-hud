@@ -56,6 +56,7 @@ tests/                           单元、安装事务和跨版本协议测试
 - 不要把 `scripts/runtime_control.py` 或 `scripts/llm-hud-dispatcher` 简单改为从当前 `llm_hud` 包导入实现。它们必须在分发前独立验证 active runtime，不能依赖尚未验证的包代码。
 - 修改 runtime marker、activation、stable control、launcher state 或 provider state 前，先阅读 `tests/test_stable_control.py`、`tests/test_runtime.py` 和 `tests/test_state_abi.py` 中钉住的协议。
 - provider 配置必须保守修改、保存恢复状态，并在检测到可观察的外部编辑时拒绝静默覆盖。
+- 提交署名归维护者，不附加 AI 工具的署名行；仓库中的 `.claude/settings.json` 为使用 Claude Code 的贡献者固定了这一行为。
 - Windows 支持是正式功能。涉及路径、换行、权限、原子替换、文件锁或安装事务的改动必须考虑原生 Windows 行为，并补充相应测试。
 
 ## 测试范围
