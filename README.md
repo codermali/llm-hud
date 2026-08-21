@@ -17,7 +17,7 @@ Claude · Opus high · ~/projects/example
 
 模型名后跟着当前会话的推理强度（仅在模型支持时出现）。`5h` 与 `7d` 是账号额度，`ctx` 是本次会话的上下文占用；上下文对所有账号都可见，额度则只对订阅账号可见。条形图表示已用比例，超过 70% 时变红。窄终端会自动换行或压缩路径。
 
-Claude Code 只在收到 API 响应时刷新额度，因此数字可能停留在上一次观测。超过两分钟没有变化的窗口会转为暗色，并标出观测已有多久：
+Claude Code 只在收到 API 响应时刷新额度，因此数字可能停留在上一次观测。超过两分钟没有变化的窗口会转为暗色，并标出这个数值已经多久没有动过：
 
 ```text
 5h   ██░░░░░░░░   24%  ↻ 14:30  ·8m    7d   ████░░░░░░   41%  ↻ Fri 09:00  ·8m
@@ -29,7 +29,7 @@ Claude Code 只在收到 API 响应时刷新额度，因此数字可能停留在
 5h   ░░░░░░░░░░    --  ↻ pending    7d   ████░░░░░░   41% used  ↻ Fri 09:00
 ```
 
-标记本身不发起任何网络请求，也不读取账号凭据；它只比较 Claude Code 报来的数值是否变化。`ctx` 描述当前会话，始终是最新的，因此不参与新鲜度标记。
+标记本身不发起任何网络请求，也不读取账号凭据；它只比较 Claude Code 报来的数值是否变化。因此它量的是"这个数值在本机多久没动过"，而不是 Claude 的真实观测时刻——两次观测数值恰好相同时会偏大，方向上只会把新的说成旧的。`ctx` 描述当前会话，始终是最新的，因此不参与新鲜度标记。
 
 终端放不下整行时，会按重要性依次舍弃字段——先是重置时间，再是新鲜度标记——都舍完仍放不下，才让每个窗口独占一行。
 
@@ -77,14 +77,14 @@ curl -fsSL https://github.com/codermali/llm-hud/releases/latest/download/install
 
 如果 `~/.local/bin` 已在 `PATH` 中，也可以直接运行 `llm-hud doctor`。安装器会在需要时打印 PATH 配置提示。`doctor` 会检查各工具的 `--version` 是否能正常执行以及相应集成是否已配置，但不会强制校验上表中的最低版本。
 
-最后重新打开或刷新目标 CLI 会话。Claude 配额数据由 Claude Code 提供，仅在 Pro/Max 订阅账户首次收到响应后出现；没有配额数据时 HUD 只显示模型和目录。用量详情请使用 Claude Code 的 [`/usage`](https://code.claude.com/docs/en/commands)。
+最后重新打开或刷新目标 CLI 会话。Claude 配额数据由 Claude Code 提供，仅在 Pro/Max 订阅账户首次收到响应后出现；没有配额数据时 HUD 显示模型、目录和 `ctx` 上下文条。用量详情请使用 Claude Code 的 [`/usage`](https://code.claude.com/docs/en/commands)。
 
 ## 它会修改什么
 
 - Claude Code：配置用户 `settings.json` 中的 `statusLine`，并保留安装前的值以便恢复。设置了 `CLAUDE_CONFIG_DIR` 时使用该目录。没有 `statusLine.refreshInterval` 时 Claude Code 只在会话事件后重绘状态栏，因此安装会补上 30 秒的默认值；你自己设过的值不会被覆盖，卸载时一并还原。
 - Codex CLI：保守修改用户 `config.toml` 中的 `[tui].status_line`，并保存原字段。设置了 `CODEX_HOME` 时使用该目录。
 - Kimi CLI：不修改配置，继续使用 Kimi 自带的底部工具栏。
-- LLM HUD：默认将运行时、启动器和恢复状态分别保存在 `~/.local/share/llm-hud`、`~/.local/bin/llm-hud` 和 `~/.config/llm-hud`。
+- LLM HUD：默认将运行时、启动器和恢复状态分别保存在 `~/.local/share/llm-hud`、`~/.local/bin/llm-hud` 和 `~/.config/llm-hud`（后者存放恢复状态与观测缓存）。
 
 默认 Release 安装会校验下载包的 SHA-256。运行时完成复制和验证后才会切换；运行时安装或激活阶段失败时会保留更新前的版本。随后各 provider 逐个配置，这一阶段不是跨 provider 的整体事务：如果其中一个失败，先前已经成功的配置会保留，安装命令返回非零状态。
 
