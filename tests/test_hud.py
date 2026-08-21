@@ -287,11 +287,18 @@ class HudTests(unittest.TestCase):
         self.assertNotIn("·8m", without_age)
 
         # Only once nothing is left to shed does each window take a line, and
-        # then it gets every field back.
-        wrapped = rendered(30)
+        # a line with room for every field gets them back.
+        wrapped = rendered(40)
         self.assertEqual(len(wrapped.split("\n")), 3)
         self.assertIn("↻", wrapped)
         self.assertIn("·8m", wrapped)
+
+        # A line too narrow even for that sheds again rather than letting the
+        # terminal wrap it a second time.
+        cramped = rendered(30)
+        self.assertEqual(len(cramped.split("\n")), 3)
+        self.assertNotIn("↻", cramped)
+        self.assertIn("·8m", cramped)
 
     def test_a_reset_window_drops_its_pending_marker_when_narrowed(self):
         snapshot = HudSnapshot(
@@ -365,6 +372,21 @@ class HudTests(unittest.TestCase):
         rendered = render_hud(snapshot, color=False)
         self.assertIn("5h   ███", rendered)
         self.assertIn("ctx  ██░", rendered)
+
+    def test_a_wrapped_window_still_fits_the_terminal(self):
+        stamp = 1900000000.0
+        windows = (
+            UsageWindow("5h", 76, resets_at=stamp, age_seconds=8 * 60),
+            UsageWindow("7d", 59, resets_at=stamp, age_seconds=8 * 60),
+        )
+        for columns in range(22, 46):
+            with self.subTest(columns=columns):
+                rendered = render_hud(
+                    HudSnapshot(provider="Claude", windows=windows, columns=columns),
+                    color=False,
+                )
+                for line in rendered.split("\n")[1:]:
+                    self.assertLessEqual(len(line), columns)
 
 
 if __name__ == "__main__":

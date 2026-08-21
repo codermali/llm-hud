@@ -253,12 +253,24 @@ def render_hud(snapshot: HudSnapshot, color: bool = True) -> str:
     # own line once nothing else can go.  The reset time is supplementary,
     # while the age marker reports that the number beside it may already be
     # wrong, so the marker outlives the timestamp by one step.
-    for options in (
+    ladder = (
         {},
         {"show_reset": False},
         {"show_reset": False, "show_age": False},
-    ):
+    )
+    for options in ladder:
         row = "    ".join(segments(**options))
         if _display_width(row) <= columns:
             return f"{header}\n{row}"
-    return "\n".join([header, *segments()])
+
+    # One window per line buys back every field, but a single segment can
+    # still outgrow a very narrow terminal, and a line Claude Code wraps
+    # itself defeats the point of laying them out here.  Shed again per line.
+    lines = []
+    for window in snapshot.windows:
+        for options in ladder:
+            segment = _window_segment(window, color, now, label_width=width, **options)
+            if _display_width(segment) <= columns:
+                break
+        lines.append(segment)
+    return "\n".join([header, *lines])
