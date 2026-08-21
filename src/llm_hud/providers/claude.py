@@ -59,6 +59,14 @@ DEFAULT_REFRESH_INTERVAL = 30
 # staleness information rather than failing a render.
 OBSERVATION_SCHEMA = 1
 
+# The rate-limit windows Claude Code can report. Each is independently
+# optional, so a payload carrying one says nothing about the other.
+RATE_LIMIT_WINDOWS = (("five_hour", "5h"), ("seven_day", "7d"))
+
+# The cache holds one small record per window. Anything larger is damage, and
+# reading it back sits on every status-line tick.
+MAX_OBSERVATION_BYTES = 8 * 1024
+
 # Claude Code lays the status line out to the right of a fixed two-column
 # gutter, so the text never receives the full terminal width. Rendering
 # against COLUMNS alone overflows by exactly that much and makes Claude Code
@@ -275,7 +283,7 @@ def _parsed_limits(
     limits = limits if isinstance(limits, dict) else {}
     return {
         key: (_used(limits[key]), _resets_at(limits[key]))
-        for key in ("five_hour", "seven_day")
+        for key, _ in RATE_LIMIT_WINDOWS
         if key in limits
     }
 
@@ -283,6 +291,8 @@ def _parsed_limits(
 def _read_observations(path: Path) -> dict[str, Any]:
     """Read recorded observations; anything unusable reads as none recorded."""
     try:
+        if path.stat().st_size > MAX_OBSERVATION_BYTES:
+            return {}
         with open(path, encoding="utf-8") as handle:
             payload = json.load(handle)
     except (OSError, ValueError):
@@ -323,7 +333,16 @@ def _record_observations(
     path = provider_observation_path("claude")
     recorded = _read_observations(path)
     ages: dict[str, float] = {}
-    windows: dict[str, Any] = {}
+    # Each window is independently optional, and rate_limits is absent
+    # entirely until the first API response of a session. A payload that does
+    # not describe a window says nothing about it, so its record is carried
+    # forward; rewriting only what this payload carries would let a starting
+    # session erase what a running one recorded.
+    windows: dict[str, Any] = {
+        key: recorded[key]
+        for key, _ in RATE_LIMIT_WINDOWS
+        if key not in parsed and isinstance(recorded.get(key), dict)
+    }
     for key, (used, resets_at) in parsed.items():
         observed_at = _observed_at(recorded.get(key), used, resets_at)
         # A clock that moved backwards would otherwise report a future
@@ -338,7 +357,11 @@ def _record_observations(
         }
     if windows != recorded:
         try:
-            atomic_write_json(path, {"schema": OBSERVATION_SCHEMA, "windows": windows})
+            atomic_write_json(
+                path,
+                {"schema": OBSERVATION_SCHEMA, "windows": windows},
+                follow_symlinks=False,
+            )
         except OSError:
             pass  # the age marker is cosmetic; a HUD tick must not fail on it
     return ages
@@ -363,7 +386,7 @@ def snapshot_from_payload(
     ages = ages or {}
     windows = tuple(
         UsageWindow(label, limits[key][0], limits[key][1], ages.get(key))
-        for key, label in (("five_hour", "5h"), ("seven_day", "7d"))
+        for key, label in RATE_LIMIT_WINDOWS
         if key in limits
     )
     # context_window is reported for every account, not just subscribers, and

@@ -1328,6 +1328,93 @@ class ClaudeProviderTests(unittest.TestCase):
                     "5h   ██░░░░░░░░   24% used    ctx  ██░░░░░░░░   18% used",
                 )
 
+    def test_a_payload_without_a_window_keeps_that_windows_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "state"
+            with Environment(LLM_HUD_STATE_DIR=str(state)):
+                claude_module._record_observations(
+                    {"five_hour": (24.0, None), "seven_day": (41.0, None)}, 500.0
+                )
+                # A payload carrying one window says nothing about the other.
+                ages = claude_module._record_observations(
+                    {"five_hour": (24.0, None)}, 560.0
+                )
+                self.assertEqual(ages["five_hour"], 60.0)
+                # The absent window keeps its history rather than restarting.
+                both = claude_module._record_observations(
+                    {"five_hour": (24.0, None), "seven_day": (41.0, None)}, 620.0
+                )
+            self.assertEqual(both["seven_day"], 120.0)
+
+    def test_a_session_before_its_first_response_keeps_the_recorded_windows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / "state"
+            path = state / "observations" / "claude.json"
+            with Environment(
+                LLM_HUD_STATE_DIR=str(state), LLM_HUD_HOME=str(root), COLUMNS=None
+            ):
+                render(
+                    json.dumps(
+                        {
+                            "rate_limits": {
+                                "five_hour": {"used_percentage": 24},
+                                "seven_day": {"used_percentage": 41},
+                            }
+                        }
+                    ).encode(),
+                    color=False,
+                )
+                recorded = json.loads(path.read_text())["windows"]
+                # rate_limits is absent until a session's first API response;
+                # that must not erase what another session already recorded.
+                render(b'{"model":{"display_name":"Opus"}}', color=False)
+            self.assertEqual(json.loads(path.read_text())["windows"], recorded)
+
+    def test_an_oversized_observation_cache_is_treated_as_damage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "state"
+            path = state / "observations" / "claude.json"
+            path.parent.mkdir(parents=True)
+            padding = "x" * claude_module.MAX_OBSERVATION_BYTES
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema": claude_module.OBSERVATION_SCHEMA,
+                        "windows": {
+                            "five_hour": {
+                                "used": 24.0,
+                                "resets_at": None,
+                                "observed_at": 100.0,
+                            }
+                        },
+                        "padding": padding,
+                    }
+                )
+            )
+            with Environment(LLM_HUD_STATE_DIR=str(state)):
+                ages = claude_module._record_observations(
+                    {"five_hour": (24.0, None)}, 500.0
+                )
+            self.assertEqual(ages["five_hour"], 0.0)
+
+    def test_the_observation_cache_refuses_to_write_through_a_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / "state"
+            path = state / "observations" / "claude.json"
+            path.parent.mkdir(parents=True)
+            outside = root / "outside.json"
+            outside.write_text("untouched")
+            path.symlink_to(outside)
+            with Environment(LLM_HUD_STATE_DIR=str(state)):
+                # The write is refused, so the render still reports fresh data.
+                ages = claude_module._record_observations(
+                    {"five_hour": (24.0, None)}, 500.0
+                )
+            self.assertEqual(ages["five_hour"], 0.0)
+            self.assertEqual(outside.read_text(), "untouched")
+
 
 if __name__ == "__main__":
     unittest.main()
