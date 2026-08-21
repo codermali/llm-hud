@@ -33,6 +33,8 @@
 - runtime trash 和 repair-backup records；
 - Claude/Codex provider state 与 transaction journal。
 
+`~/.config/llm-hud/observations/claude.json` 不在这份清单里。它记录 Claude Code 上次报告的额度数值与首次见到该数值的时间，只用于在 HUD 上标注观测新鲜度，属于可丢弃缓存：损坏、schema 不认、目录不可写或时钟回拨，一律降级成"没有新鲜度信息"并照常渲染，因此不需要跨版本兼容保证，也不参与 `tests/test_state_abi.py` 的合同。
+
 activation v1 继续使用三字段磁盘格式。当前实现只使用 active 字段；读取旧记录时会校验但忽略历史 previous 字段，任何新写入都把第三字段规范化为 `-`。
 
 升级不会先迁移 provider state，因此当前版本必须能读取上一个发布版本写出的 schema。

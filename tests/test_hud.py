@@ -257,6 +257,53 @@ class HudTests(unittest.TestCase):
         self.assertIn("76% used", rendered)
         self.assertNotIn("pending", rendered)
 
+    def test_narrowing_sheds_fields_before_it_spends_lines(self):
+        stamp = 1900000000.0
+        windows = (
+            UsageWindow("5h", 76, resets_at=stamp, age_seconds=8 * 60),
+            UsageWindow("7d", 59, resets_at=stamp, age_seconds=8 * 60),
+        )
+
+        def rendered(columns):
+            return render_hud(
+                HudSnapshot(provider="Claude", windows=windows, columns=columns),
+                color=False,
+            )
+
+        full = rendered(76)
+        self.assertEqual(len(full.split("\n")), 2)
+        self.assertIn("↻", full)
+        self.assertIn("·8m", full)
+
+        # The reset time goes first; the marker saying the number may be stale
+        # is worth more than the timestamp beside it.
+        without_reset = rendered(60)
+        self.assertEqual(len(without_reset.split("\n")), 2)
+        self.assertNotIn("↻", without_reset)
+        self.assertIn("·8m", without_reset)
+
+        without_age = rendered(50)
+        self.assertEqual(len(without_age.split("\n")), 2)
+        self.assertNotIn("·8m", without_age)
+
+        # Only once nothing is left to shed does each window take a line, and
+        # then it gets every field back.
+        wrapped = rendered(30)
+        self.assertEqual(len(wrapped.split("\n")), 3)
+        self.assertIn("↻", wrapped)
+        self.assertIn("·8m", wrapped)
+
+    def test_a_reset_window_drops_its_pending_marker_when_narrowed(self):
+        snapshot = HudSnapshot(
+            provider="Claude",
+            windows=(UsageWindow("5h", 76, resets_at=1000.0),),
+            columns=25,
+        )
+        with mock.patch("llm_hud.hud._now", return_value=1001.0):
+            self.assertEqual(
+                render_hud(snapshot, color=False), "Claude\n5h  ░░░░░░░░░░    --"
+            )
+
     def test_narrow_terminals_drop_the_age_marker_before_wrapping(self):
         windows = (
             UsageWindow("5h", 76, age_seconds=8 * 60),

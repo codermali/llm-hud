@@ -168,6 +168,7 @@ def _window_segment(
     color: bool,
     now: float,
     show_age: bool = True,
+    show_reset: bool = True,
     label_width: int = 2,
 ) -> str:
     used = window.used
@@ -201,9 +202,10 @@ def _window_segment(
         percent = f"{percent} {_style('used', '2', color)}"
     parts = [f"{window.label:<{label_width}}", bar, percent]
     if expired:
-        parts.append(_style("↻ pending", "2", color))
+        if show_reset:
+            parts.append(_style("↻ pending", "2", color))
         return "  ".join(parts)
-    reset = _reset_text(window)
+    reset = _reset_text(window) if show_reset else None
     if reset:
         parts.append(_style(f"↻ {reset}", "2", color))
     if stale and show_age:
@@ -240,20 +242,23 @@ def render_hud(snapshot: HudSnapshot, color: bool = True) -> str:
 
     now = _now()
     width = max([2, *(_display_width(w.label) for w in snapshot.windows)])
-    segments = [
-        _window_segment(window, color, now, label_width=width)
-        for window in snapshot.windows
-    ]
-    row = "    ".join(segments)
-    if _display_width(row) <= columns:
-        return f"{header}\n{row}"
-    # The age marker is the least important field: drop it before spending a
-    # whole extra line on every window.
-    compact = [
-        _window_segment(window, color, now, show_age=False, label_width=width)
-        for window in snapshot.windows
-    ]
-    compact_row = "    ".join(compact)
-    if _display_width(compact_row) <= columns:
-        return f"{header}\n{compact_row}"
-    return "\n".join([header, *segments])
+
+    def segments(**options: bool) -> list[str]:
+        return [
+            _window_segment(window, color, now, label_width=width, **options)
+            for window in snapshot.windows
+        ]
+
+    # Shed the least load-bearing field first, and only give every window its
+    # own line once nothing else can go.  The reset time is supplementary,
+    # while the age marker reports that the number beside it may already be
+    # wrong, so the marker outlives the timestamp by one step.
+    for options in (
+        {},
+        {"show_reset": False},
+        {"show_reset": False, "show_age": False},
+    ):
+        row = "    ".join(segments(**options))
+        if _display_width(row) <= columns:
+            return f"{header}\n{row}"
+    return "\n".join([header, *segments()])
